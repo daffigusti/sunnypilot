@@ -22,6 +22,8 @@ This branch is a personal fork of sunnypilot that adds the **Chery Omoda E5 2024
 | Stock AEB | Detected. The OEM `0x3A2` is passed through and openpilot stops sending ACC commands. |
 | Blinkers, BSM, EPS watchdog, cluster LKA icon | Enabled. |
 | Door open, seatbelt | Parsed from `BCM_SIGNAL_1` door bits and `NEW_MSG_430.SEATBELT`, confirmed on one route. |
+| Steering rate | From `STEER_SENSOR` (`0xC4`), 4 deg/s per LSB, sign from its high-resolution angle. |
+| Cruise cancel | openpilot taps the ACC button to cancel the stock ACC when it disengages, only while the ACC is active. |
 
 ### Not supported yet
 
@@ -30,9 +32,8 @@ Compared with a mature port such as Hyundai, these are still missing. Most need 
 | Feature | Notes |
 | --- | --- |
 | Forward collision warning (`stockFcw`) | Not parsed. `HUD_ALERT` and `AEB_COMMAND` are candidates. |
-| Parking brake, ESP off, ACC fault | Not parsed. `EPB` is in the DBC. |
-| Steering rate | `steeringRateDeg` is always 0. |
-| Sending cruise cancel | openpilot cannot cancel the stock ACC by itself. |
+| Parking brake, ESP off, ACC fault | Not parsed. Candidates: `EPB`, `0x537`, `0x51D`, `0x502`. |
+| EPS fault lamp | Not parsed. `0x40F` byte 0 is a candidate. The EPS watchdog still needs 30 s of a dead servo. |
 | Full MADS | Needs an LKAS toggle signal. None has been found. |
 | Stock lead and radar | `LEAD_FRONT` is parsed but unused, so openpilot sees no radar lead. |
 | Cluster lane lines and lane departure warning | Not sent. Only the LKA active state is. |
