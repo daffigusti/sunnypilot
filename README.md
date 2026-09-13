@@ -1,5 +1,77 @@
 ![](https://user-images.githubusercontent.com/47793918/233812617-beab2e71-57b9-479e-8bff-c3931347ca40.png)
 
+## Chery Omoda E5 fork (`feature/chery-omoda-e5`)
+
+This branch is a personal fork of sunnypilot that adds the **Chery Omoda E5 2024**. Everything below the next horizontal rule is the upstream sunnypilot README.
+
+> **Warning:** This port is alpha and has not been validated on the road. Several safety-relevant signals are still unverified on the vehicle (see [Known gaps](#known-gaps)). Use it only for bench work or on a closed course, with a driver ready to take over at all times.
+
+### What works
+
+| Feature | State |
+| --- | --- |
+| Lateral (angle control, `0x345`) | Enabled. Active commands capped at ±150°, rate limited by the vehicle model (`AngleSteeringLimitsVM`). |
+| Longitudinal (`ACC_CMD` `0x3A2`) | Alpha and **off by default**. Requires the alpha-longitudinal toggle. |
+| Stop and hold | Uses the stock hold encoding (`CMD=400`). Panda allows it only while the car is already stopped. |
+| Resume from hold | Taps `RES_PLUS` on `0x360` (camera bus) while stopped. |
+| Stock AEB | Detected. The OEM `0x3A2` is passed through and openpilot stops sending ACC commands. |
+| Driver steering override | `abs(TORQUE_DRIVER) > 70`, with 1 s hysteresis. |
+| Door, seatbelt, FCW | Not parsed. These always read false. |
+
+### Where the code lives
+
+The car port and panda safety live in the `opendbc_repo` submodule, which points at [daffigusti/opendbc](https://github.com/daffigusti/opendbc) (branch `feature/chery-omoda-e5`).
+
+| Path | Contents |
+| --- | --- |
+| `opendbc_repo/opendbc/car/chery/` | `carcontroller.py`, `carstate.py`, `cherycan.py`, `interface.py`, `values.py`, `fingerprints.py` |
+| `opendbc_repo/opendbc/car/chery/README.md` | Safety-hook CAN layout and the remaining hardware gates |
+| `opendbc_repo/opendbc/car/chery/KNOWN_GAPS.md` | Unverified signals and the evidence still needed |
+| `opendbc_repo/opendbc/safety/modes/chery.h` | Panda safety mode |
+| `opendbc_repo/opendbc/dbc/chery_canfd.dbc` | DBC |
+
+### Getting started
+
+Clone with submodules:
+
+```sh
+git clone --recurse-submodules -b feature/chery-omoda-e5 https://github.com/daffigusti/sunnypilot.git
+cd sunnypilot
+tools/op.sh setup
+```
+
+If you already have a clone, run `git submodule update --init --recursive` after checking out the branch. This matters because `.gitmodules` points `opendbc` at the personal fork.
+
+To install on a comma device, enter this custom software URL during setup:
+
+```
+installer.comma.ai/daffigusti/feature/chery-omoda-e5
+```
+
+### Tests
+
+```sh
+cd opendbc_repo
+source ./setup.sh
+pytest opendbc/car/chery/tests -v
+pytest opendbc/safety/tests/test_chery.py -v
+./test.sh   # full opendbc lint and test suite
+```
+
+### Known gaps
+
+[`KNOWN_GAPS.md`](opendbc_repo/opendbc/car/chery/KNOWN_GAPS.md) has the full list. The main ones:
+
+- No driver gas pedal signal has been found. `gas_pressed` comes only from the camera's `ACC_CMD.GAS_PRESSED` bit.
+- The sign of `TORQUE_DRIVER` and the override threshold of 70 have not been measured.
+- `steerRatio` 14 and `steerActuatorDelay` 0.2 were carried over from another fork, not measured. If you change `steerRatio`, change panda's `steer_ratio` to match.
+- The mapping from raw ACC command to real acceleration, the full-stop hold, the resume tap cadence, and the cluster's response to the substituted `LKAS_STATE` (`0x307`) are all unconfirmed on the vehicle.
+- Stock AEB interaction still needs hardware validation.
+
+When you share logs, strip route IDs, VINs, locations, and timestamps first.
+
+---
+
 ## 🌞 What is sunnypilot?
 [sunnypilot](https://github.com/sunnyhaibin/sunnypilot) is a fork of comma.ai's openpilot, an open source driver assistance system. sunnypilot offers the user a unique driving experience for over 300+ supported car makes and models with modified behaviors of driving assist engagements. sunnypilot complies with comma.ai's safety rules as accurately as possible.
 
