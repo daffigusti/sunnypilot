@@ -222,6 +222,14 @@ class TestBrandSteeringModeRestrictions(OpenpilotTestCase):
     assert read_steering_mode_param(CP, CP_SP, params) == MadsSteeringModeOnBrake.DISENGAGE
     params.get.assert_not_called()
 
+  def test_chery_forced_to_disengage(self, mocker):
+    CP = structs.CarParams()
+    CP.brand = "chery"
+    CP_SP = structs.CarParamsSP()
+    params = mocker.MagicMock()
+    assert read_steering_mode_param(CP, CP_SP, params) == MadsSteeringModeOnBrake.DISENGAGE
+    params.get.assert_not_called()
+
   def test_tesla_without_vehicle_bus_forced_to_disengage(self, mocker):
     CP = structs.CarParams()
     CP.brand = "tesla"
