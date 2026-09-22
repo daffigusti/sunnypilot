@@ -164,25 +164,26 @@ class TestGeometry(WarpCacheTest):
 class TestInitDevice(unittest.TestCase):
   """prepare() runs this before modeld goes realtime: tinygrad's compile pool
   is otherwise created on the warp's first call, and its handler threads then
-  sit at FIFO 54 on the frame loop's core."""
+  sit at FIFO 54 on the frame loop's core. Its eight idle workers also cost
+  244 MB, so the pool is turned off rather than started early."""
 
   def setUp(self):
-    self.pool = mock.Mock(name='get_worker_pool')
-    worker = types.ModuleType('tinygrad.engine.worker')
-    worker.get_worker_pool = self.pool
+    self.parallel = types.SimpleNamespace(value=8)
+    helpers = types.ModuleType('tinygrad.helpers')
+    helpers.PARALLEL = self.parallel
     modules = {'tinygrad': mock.MagicMock(), 'tinygrad.tensor': mock.MagicMock(),
-               'tinygrad.engine': mock.MagicMock(), 'tinygrad.engine.worker': worker}
+               'tinygrad.helpers': helpers}
     patcher = mock.patch.dict(sys.modules, modules)
     patcher.start()
     self.addCleanup(patcher.stop)
 
-  def test_the_compile_pool_is_created_with_the_device(self):
+  def test_the_compile_pool_is_turned_off_with_the_device(self):
     warp_cache.init_device()
-    self.pool.assert_called_once_with()
+    self.assertEqual(self.parallel.value, 0)
 
-  def test_a_pool_that_will_not_start_is_logged_not_raised(self):
-    # An older tinygrad without the module, or PARALLEL=0, must not veto the accelerator.
-    self.pool.side_effect = RuntimeError('no pool')
+  def test_a_tinygrad_without_the_knob_is_logged_not_raised(self):
+    del sys.modules['tinygrad.helpers']
+    sys.modules['tinygrad.helpers'] = None  # ImportError on import
     with mock.patch.object(warp_cache.cloudlog, 'exception') as log:
       warp_cache.init_device()
     log.assert_called_once()
