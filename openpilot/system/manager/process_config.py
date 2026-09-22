@@ -9,6 +9,7 @@ from openpilot.common.hardware import PC, COMMA_HARDWARE
 from openpilot.system.manager.process import PythonProcess, NativeProcess, DaemonProcess
 from openpilot.common.hardware.hw import Paths
 
+from openpilot.sunnypilot import accelerators
 from openpilot.sunnypilot.mapd.mapd_manager import MAPD_PATH
 
 from openpilot.sunnypilot.models.helpers import get_active_model_runner
@@ -67,6 +68,10 @@ def only_offroad(started: bool, params: Params, CP: car.CarParams) -> bool:
 
 def livestream(started: bool, params: Params, CP: car.CarParams) -> bool:
   return params.get_bool("IsLiveStreaming")
+
+def use_github_runner(started, params, CP: car.CarParams) -> bool:
+  return not PC and params.get_bool("EnableGithubRunner") and (
+    not params.get_bool("NetworkMetered") and not params.get_bool("GithubRunnerSufficientVoltage"))
 
 def use_copyparty(started, params, CP: car.CarParams) -> bool:
   return bool(params.get_bool("EnableCopyparty"))
@@ -169,6 +174,11 @@ procs = [
 procs += [
   # Models
   PythonProcess("models_manager", "openpilot.sunnypilot.models.manager", only_offroad),
+  # backends declare their offroad daemons; manager owns the onroad gating
+  # always_run: jetlinkd holds the USB gadget open for as long as the link is
+  # enabled, onroad included. A gadget whose owner exits leaves the bus, and
+  # that is the unplug at every ignition edge this arrangement removes
+  *[PythonProcess(d.name, d.module, and_(always_run, d.should_run)) for d in accelerators.daemons()],
   NativeProcess("modeld_tinygrad", "openpilot/sunnypilot/modeld_v2", ["./modeld"], and_(only_onroad, is_tinygrad_model)),
 
   # Backup
@@ -181,6 +191,10 @@ procs += [
   # locationd
   NativeProcess("locationd_llk", "openpilot/sunnypilot/selfdrive/locationd", ["./locationd"], only_onroad),
 ]
+
+if os.path.exists("../../../release/ci/github_runner.sh"):
+  procs += [NativeProcess("github_runner_start", "release/ci",
+                          ["./github_runner.sh", "start"], and_(only_offroad, use_github_runner), sigkill=False)]
 
 if os.path.exists("../../sunnypilot/sunnylink/uploader.py"):
   procs += [PythonProcess("sunnylink_uploader", "openpilot.sunnypilot.sunnylink.uploader", use_sunnylink_uploader_shim)]

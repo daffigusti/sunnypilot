@@ -107,9 +107,9 @@ class DeveloperLayoutMici(NavScroller):
       ("AlphaLongitudinalEnabled", self._alpha_long_toggle),
       ("ShowDebugInfo", self._debug_mode_toggle),
     )
-    onroad_blocked_toggles = (self._adb_toggle, self._joystick_toggle)
+    onroad_blocked_toggles = (self._adb_toggle, self._joystick_toggle, self._alpha_long_toggle)
     release_blocked_toggles = (self._joystick_toggle, self._long_maneuver_toggle, self._lat_maneuver_toggle, self._alpha_long_toggle)
-    engaged_blocked_toggles = (self._long_maneuver_toggle, self._lat_maneuver_toggle, self._alpha_long_toggle)
+    engaged_blocked_toggles = (self._long_maneuver_toggle, self._lat_maneuver_toggle)
 
     # Hide non-release toggles on release builds
     for item in release_blocked_toggles:
@@ -188,8 +188,9 @@ class DeveloperLayoutMici(NavScroller):
 
   def _on_alpha_long_enabled(self, state: bool):
     def do_toggle(_state: bool):
+      # param only: card watches for the change and requests the onroad cycle
+      # itself, after any radar hand-back the brand needs
       ui_state.params.put_bool("AlphaLongitudinalEnabled", _state, block=True)
-      restart_needed_callback()
       self._update_toggles()
 
     if state:

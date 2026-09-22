@@ -14,6 +14,7 @@ from openpilot.cereal import log
 from openpilot.cereal.services import SERVICE_LIST
 from openpilot.common.utils import strip_deprecated_keys
 from openpilot.common.filter_simple import FirstOrderFilter
+from openpilot.sunnypilot.common.ignition import get_ignition_state
 from openpilot.common.params import Params
 from openpilot.common.realtime import DT_HW
 from openpilot.selfdrive.selfdrived.alertmanager import set_offroad_alert
@@ -24,8 +25,10 @@ from openpilot.common.hardware.usb import CHESTNUT_FW_VERSION, CHESTNUT_USB_PROD
 from openpilot.common.linux import LinuxSystemStats
 from openpilot.system.loggerd.config import get_available_percent
 from openpilot.common.swaglog import cloudlog
+from openpilot.sunnypilot import accelerators
 from openpilot.sunnypilot.system.statsd import statlog
 from openpilot.system.hardware.power_monitoring import PowerMonitoring
+from openpilot.sunnypilot.system.hardware.hardwared_ext import HardwaredExt
 from openpilot.system.hardware.fan_controller import FanController
 from openpilot.system.hardware.chestnut.status import ChestnutStatus
 from openpilot.common.version import terms_version, training_version, get_build_metadata, terms_version_sp
@@ -233,6 +236,7 @@ def hardware_thread(end_event, hw_queue) -> None:
   offroad_cycle_count = 0
 
   params = Params()
+  ext = HardwaredExt(params)
   power_monitor = PowerMonitoring()
 
   uptime_offroad: float = params.get("UptimeOffroad", return_default=True)
@@ -254,15 +258,14 @@ def hardware_thread(end_event, hw_queue) -> None:
     peripheralState = sm['peripheralState']
 
     # handle requests to cycle system started state
-    if params.get_bool("OnroadCycleRequested"):
-      params.put_bool("OnroadCycleRequested", False, block=True)
+    if ext.update(started_ts is not None):
       offroad_cycle_count = sm.frame
     onroad_conditions["not_onroad_cycle"] = (sm.frame - offroad_cycle_count) >= ONROAD_CYCLE_TIME * SERVICE_LIST['pandaStates'].frequency
 
     if sm.updated['pandaStates'] and len(pandaStates) > 0:
 
       # Set ignition based on any panda connected
-      onroad_conditions["ignition"] = any(ps.ignitionLine or ps.ignitionCan for ps in pandaStates if ps.pandaType != log.PandaState.PandaType.unknown)
+      onroad_conditions["ignition"] = get_ignition_state(pandaStates)
 
       pandaState = pandaStates[0]
 
@@ -312,6 +315,12 @@ def hardware_thread(end_event, hw_queue) -> None:
     chestnut_status.update(started_ts is None, branch, last_hw_state.usb_state, chestnut.failed,
                            params.get_bool("ChestnutLoading"), params.get("ChestnutActive"),
                            chestnut_state if chestnut_valid else None, set_offroad_alert_if_changed)
+
+    # an enabled accelerator that cannot come up is otherwise silently absent
+    accelerator_error = accelerators.unavailable_reason()
+    set_offroad_alert_if_changed("Offroad_AcceleratorUnavailable", accelerator_error is not None,
+                                 extra_text=accelerator_error)
+
     # this subset is only used for offroad
     temp_sources = [
       msg.deviceState.memoryTempC,
@@ -450,6 +459,8 @@ def hardware_thread(end_event, hw_queue) -> None:
     # Check if we need to shut down
     if power_monitor.should_shutdown(onroad_conditions["ignition"], in_car, off_ts, started_seen):
       cloudlog.warning(f"shutting device down, offroad since {off_ts}")
+      # an accelerator on its own supply outlives us; one param read when jetlink is off
+      accelerators.shutdown(f"comma shutting down, offroad since {off_ts}", timeout=25.0)
       params.put_bool("DoShutdown", True, block=True)
 
     msg.deviceState.started = started_ts is not None and not offroad_mode

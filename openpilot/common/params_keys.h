@@ -83,6 +83,7 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     {"LivestreamEncoderBitrate", {CLEAR_ON_MANAGER_START | DONT_LOG, INT}},
     {"LivestreamRequestKeyframe", {CLEAR_ON_MANAGER_START | DONT_LOG, BOOL}},
     {"LiveTorqueParameters", {PERSISTENT | DONT_LOG, BYTES}},
+    {"LiveTorqueParametersSP", {PERSISTENT | DONT_LOG, BYTES}},
     {"LocationFilterInitialState", {PERSISTENT, BYTES}},
     {"LateralManeuverMode", {CLEAR_ON_MANAGER_START | CLEAR_ON_OFFROAD_TRANSITION, BOOL}},
     {"LongitudinalManeuverMode", {CLEAR_ON_MANAGER_START | CLEAR_ON_OFFROAD_TRANSITION, BOOL}},
@@ -108,6 +109,9 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     {"Offroad_UpdateFailed", {CLEAR_ON_MANAGER_START, JSON}},
     {"Offroad_DriverMonitoringUncertain", {CLEAR_ON_MANAGER_START | CLEAR_ON_ONROAD_TRANSITION, JSON}},
     {"OnroadCycleRequested", {CLEAR_ON_MANAGER_START, BOOL}},
+    {"OffroadModeRequested", {CLEAR_ON_MANAGER_START, BOOL}},
+    {"StockEcuHandBackRequest", {CLEAR_ON_MANAGER_START | CLEAR_ON_OFFROAD_TRANSITION, JSON}},
+    {"StockEcuHandBackResult", {CLEAR_ON_MANAGER_START | CLEAR_ON_OFFROAD_TRANSITION, JSON}},
     {"OpenpilotEnabledToggle", {PERSISTENT | BACKUP, BOOL, "1"}},
     {"PandaHeartbeatLost", {CLEAR_ON_MANAGER_START | CLEAR_ON_OFFROAD_TRANSITION, BOOL}},
     {"PrimeType", {PERSISTENT, INT}},
@@ -142,6 +146,19 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     {"Version", {PERSISTENT, STRING}},
 
     // --- sunnypilot params --- //
+
+    // Accelerators: what runs the large model. See sunnypilot/accelerators/.
+    {"AcceleratorProgress", {CLEAR_ON_MANAGER_START, JSON}},
+    {"Offroad_AcceleratorUnavailable", {CLEAR_ON_MANAGER_START, JSON}},
+    // jetlink backend. Readiness must survive a reboot, or every ignition cycle
+    // would rebuild a multi-minute TensorRT engine.
+    {"JetlinkEnabled", {PERSISTENT | BACKUP, BOOL}},
+    {"JetlinkEndpoint", {PERSISTENT | BACKUP, STRING}},
+    {"JetlinkModel", {PERSISTENT | BACKUP, STRING}},  // legacy: the pick is ModelManager_ActiveBundleChestnut; read once to migrate
+    {"JetlinkEngineReady", {PERSISTENT, STRING}},
+    {"JetlinkSpec", {PERSISTENT, JSON}},
+    {"JetlinkCachedModels", {PERSISTENT, JSON}},
+    {"JetlinkModelPointers", {PERSISTENT, JSON}},
     {"ApiCache_DriveStats", {PERSISTENT, JSON}},
     {"AutoLaneChangeBsmDelay", {PERSISTENT | BACKUP, BOOL, "0"}},
     {"AutoLaneChangeTimer", {PERSISTENT | BACKUP, INT, "0"}},
@@ -212,6 +229,8 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     {"ModelManager_LastSyncTime_Chestnut", {CLEAR_ON_MANAGER_START | CLEAR_ON_OFFROAD_TRANSITION, INT, "0"}},
     {"ModelManager_ModelsCache", {PERSISTENT | BACKUP, JSON}},
     {"ModelManager_ModelsCache_Chestnut", {PERSISTENT | BACKUP, JSON}},
+    // zoompilot: one-time marker so the Firehose Model is applied as the default exactly once (see models/default_bootstrap.py)
+    {"DefaultModelApplied", {PERSISTENT | BACKUP, BOOL}},
 
     // Neural Network Lateral Control
     {"NeuralNetworkLateralControl", {PERSISTENT | BACKUP, BOOL, "0"}},
@@ -233,6 +252,8 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
 
     // sunnypilot car specific params
     {"HyundaiLongitudinalTuning", {PERSISTENT | BACKUP, INT, "0"}},
+    {"MazdaTjaButton", {PERSISTENT | BACKUP, BOOL, "0"}},
+    {"MazdaMovingTakeover", {PERSISTENT | BACKUP, BOOL, "0"}},
     {"SubaruStopAndGo", {PERSISTENT | BACKUP, BOOL, "0"}},
     {"SubaruStopAndGoManualParkingBrake", {PERSISTENT | BACKUP, BOOL, "0"}},
     {"TeslaCoopSteering", {PERSISTENT | BACKUP, BOOL, "0"}},
@@ -248,6 +269,7 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     {"LagdToggle", {PERSISTENT | BACKUP, BOOL, "1"}},
     {"LagdToggleDelay", {PERSISTENT | BACKUP, FLOAT, "0.2"}},
     {"LagdValueCache", {PERSISTENT, FLOAT, "0.2"}},
+    {"LaneChangeSmoothing", {PERSISTENT | BACKUP, INT, "0"}},
     {"LaneTurnDesire", {PERSISTENT | BACKUP, BOOL, "0"}},
     {"LaneTurnValue", {PERSISTENT | BACKUP, FLOAT, "19.0"}},
     {"PlanplusControl", {PERSISTENT | BACKUP, FLOAT, "1.0"}},
@@ -284,6 +306,7 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     {"MapTargetVelocities", {CLEAR_ON_ONROAD_TRANSITION, STRING}},
     {"SmartCruiseControlMap", {PERSISTENT | BACKUP, BOOL, "0"}},
     {"SmartCruiseControlVision", {PERSISTENT | BACKUP, BOOL, "0"}},
+    {"SmartCruiseDecelOvershoot", {PERSISTENT | BACKUP, BOOL, "0"}},
 
     // Torque lateral control custom params
     {"CustomTorqueParams", {PERSISTENT | BACKUP , BOOL}},
@@ -291,8 +314,14 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     {"LateralJerkTorqueController", {PERSISTENT | BACKUP, BOOL, "0"}},
     {"LiveTorqueParamsToggle", {PERSISTENT | BACKUP , BOOL}},
     {"LiveTorqueParamsRelaxedToggle", {PERSISTENT | BACKUP , BOOL}},
-    {"TorqueControlTune", {PERSISTENT | BACKUP, FLOAT, "0.0"}},
+    {"TorqueControlTune", {PERSISTENT | BACKUP, FLOAT, "2.0"}},  // small-model tune
+    {"TorqueControlTuneBig", {PERSISTENT | BACKUP, FLOAT, "1.0"}},  // big-model tune
+    {"SpeedDependentTorqueToggle", {PERSISTENT | BACKUP, BOOL, "0"}},
     {"TorqueParamsOverrideEnabled", {PERSISTENT | BACKUP, BOOL, "0"}},
     {"TorqueParamsOverrideFriction", {PERSISTENT | BACKUP, FLOAT, "0.1"}},
     {"TorqueParamsOverrideLatAccelFactor", {PERSISTENT | BACKUP, FLOAT, "2.5"}},
+    // Ensures steer-to-zero Mazda torque defaults are seeded once.
+    {"MazdaTorqueDefaultsApplied", {PERSISTENT | BACKUP, BOOL}},
+    // Tune version last seeded for the steer-to-zero Mazda EPS; a bump re-seeds everyone once.
+    {"MazdaTorqueTuneSeeded", {PERSISTENT | BACKUP, FLOAT}},
 };
