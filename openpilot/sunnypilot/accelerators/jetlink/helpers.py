@@ -167,6 +167,14 @@ CATALOG_PARAM = "ModelManager_ModelsCache_Chestnut"
 # merged or not, and the pointer is the oid and size the Jetson is asked for
 POINTER_URL = 'https://raw.githubusercontent.com/commaai/openpilot/{ref}/openpilot/selfdrive/modeld/models/big_driving_supercombo.onnx'
 POINTER_TIMEOUT = 10.0
+# From openpilot 6080cc6 on, comma ships only the compiled pkl and publishes
+# the big ONNX on Hugging Face (commaai/openpilot_driving_models), so these
+# refs have no pointer to fetch. The server must already hold the file
+# (`jetlink-models import` on the Mac); the hash is what it is asked for.
+KNOWN_POINTERS = {
+  # Cinque Terre V3, f78ed37d-afad-4dbc-8050-40ea885eedde/12864
+  'bf3e3631b3f91d92a1020a5e0dd4298b93ff4244': ('404a18cfd86d29637d20c697dfde245bb47c666ae016730ab674c65f4d1e1aa4', 766354845),
+}
 _REF = re.compile(r'[0-9a-f]{40}')
 # the index and the slot are JSON params, and the UI names the active model
 # every frame; the status line can lag a new pick by this long
@@ -202,6 +210,8 @@ def pointers() -> dict[str, dict]:
 
 def fetch_pointer(ref: str) -> tuple[str, int]:
   """The oid and size of the ONNX at a comma commit."""
+  if ref in KNOWN_POINTERS:
+    return KNOWN_POINTERS[ref]
   from openpilot.sunnypilot.accelerators.jetlink import lfs
   with urllib.request.urlopen(POINTER_URL.format(ref=ref), timeout=POINTER_TIMEOUT) as response:
     text = response.read(4096).decode()

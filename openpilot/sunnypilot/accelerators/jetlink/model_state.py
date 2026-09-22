@@ -68,14 +68,16 @@ class JetlinkModelState(ModelStateBase):
 
     # make_warp is sized in NV12 pixels and the model input after deinterleave,
     # so img (1, 12, 128, 256) is a 512x256 warp, MEDMODEL_INPUT_SIZE
-    img_h, img_w = spec.input_shapes['img'][2:]
+    img_h, img_w = spec.model_hw
     # a warm warp is handed in when there is one: the first call costs ~2 s and
     # this can run on modeld's frame thread (warp_cache.warm)
     self.warp = warp if warp is not None else warp_cache.load_warp(cam_w, cam_h, img_w * 2, img_h * 2)
 
     self.input_shapes = spec.input_shapes
     self.output_slices = spec.output_slices
-    self.vision_input_names = [k for k in spec.input_shapes if 'img' in k]
+    # the camera buffers modeld hands over, whatever the model names its inputs:
+    # a model that keeps its own history has new_img and state_img_q instead
+    self.vision_input_names = ['img', 'big_img']
     # from the spec, not ModelConstants: the server derives its history stride
     # from the same field
     self.frame_skip = spec.frame_skip

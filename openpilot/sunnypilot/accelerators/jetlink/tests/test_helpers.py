@@ -274,6 +274,13 @@ class TestResolvePointer(unittest.TestCase):
       self.assertEqual(helpers.resolve_pointer(REF_A), ('1' * 64, 766_000_000))
     urlopen.assert_not_called()
 
+  def test_a_ref_without_an_onnx_uses_the_known_hash(self):
+    ref = 'bf3e3631b3f91d92a1020a5e0dd4298b93ff4244'   # Cinque Terre V3: comma ships only the pkl
+    with mock.patch.object(helpers, '_get', return_value={}), \
+         mock.patch.object(helpers.urllib.request, 'urlopen') as urlopen:
+      self.assertEqual(helpers.resolve_pointer(ref), helpers.KNOWN_POINTERS[ref])
+    urlopen.assert_not_called()
+
   def test_a_miss_raises_and_records_nothing(self):
     for failure in ({'side_effect': OSError('offline')}, {'return_value': self.response(b'<html>not found</html>')}):
       with self.subTest(failure), mock.patch.object(helpers, '_get', return_value={}), \
