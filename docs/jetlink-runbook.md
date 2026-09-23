@@ -9,9 +9,9 @@ Pro 16 inci M3 Max, branch `feature/chery-jetlink`, model besar default
 1. Harness ke comma. Biarkan comma boot penuh sampai UI muncul.
 2. Mac di charger mobil USB-C PD, minimal 65 W. High Power Mode on
    (System Settings > Battery > Energy Mode, untuk power adapter dan battery).
-3. Buka Jetlink.app. Keeper GPU hidup sendiri (`gpu clock keeper running` di
-   Logs). Tutup browser, Termius, dan aplikasi Electron lain. Terminal.app
-   boleh.
+3. Buka Jetlink.app. Penjaga clock GPU (Metal keep-alive upstream) hidup
+   sendiri saat frame masuk, tidak ada baris log khusus. Tutup browser,
+   Termius, dan aplikasi Electron lain. Terminal.app boleh.
 4. Baru colok kabel USB-C ke C dari comma ke port Mac yang sudah teruji.
    Pakai kabel dan port yang sama terus.
 5. Ignition on. Settings > Models harus menampilkan nama model besar dan status
@@ -46,13 +46,15 @@ Jetlink.app > Status: fps 20, frame time sekitar 23 ms, slow 0.
 | --- | ---: | ---: | ---: |
 | awal, tanpa apa-apa | 74 ms | 105 ms | 42% |
 | keeper GPU + AC + High Power, loopback | 18 ms | 22 ms | 0% |
+| keep-alive upstream + AC + High Power, loopback | 19 ms | 21 ms | 0% |
 | dengan comma, USB 3, di meja | 27 ms | 32 ms | 0.05% |
 | di mobil, 30 menit, sisi Mac | 23 ms | 23 ms | 0 |
 
 Penyebab angka awal: governor macOS menurunkan clock GPU dari 1345 ke 340 MHz
-setelah 20 detik beban 40% duty. Keeper (`--keep-gpu-busy`, otomatis di Mac)
-menjaga antrian GPU tidak kosong. Di baterai tetap 8.8% lewat budget, jadi
-charger wajib.
+setelah 20 detik beban 40% duty. Penjaganya sekarang Metal keep-alive dari
+upstream jetlink (commit `194ff6d`, otomatis untuk CoreML GPU, matikan dengan
+`JETLINK_METAL_KEEPALIVE=0`); keeper tinygrad buatan sendiri sudah dibuang.
+Di baterai tetap 8.8% lewat budget, jadi charger wajib.
 
 ## Gejala dan obatnya
 
@@ -113,11 +115,15 @@ Setelah update kode di comma, reboot saat offroad.
   pool compile tinygrad (244 MB).
 - opendbc fork, branch `feature/chery-jetlink`: merge opendbc zoompilot, wajib
   karena kode car dan selfdrived zoompilot mengimpornya saat boot.
-- jetlink fork, branch `keep-gpu-busy`: keeper clock GPU dan fix sesi hantu.
-  Branch `stateful-models` di atasnya menambah model yang membawa history
-  sendiri (Cinque Terre V3). Jetlink.app di Mac adalah build sendiri dari
-  `stateful-models` (`make -C macos app`), app resmi tersimpan di
-  `/Applications/Jetlink-prev.app`.
+- jetlink fork, branch `stateful-models`: fix sesi hantu, model yang membawa
+  history sendiri (Cinque Terre V3), endpoint LFS huggingface dulu, plus
+  merge upstream `main` dengan Metal keep-alive. Keeper tinygrad dari branch
+  `keep-gpu-busy` sudah dibuang. Jetlink.app di Mac adalah build sendiri dari
+  `stateful-models` (`make -C macos app`). Cadangan: `/Applications/Jetlink-prev.app`
+  (resmi), `/Applications/Jetlink-keeper.app` (build dengan keeper tinygrad),
+  branch `backup/stateful-models-20260923` di fork.
+- Kalau `make -C macos app` masih membawa modul yang sudah dihapus: hapus
+  `build/` di root repo jetlink (sisa setuptools), lalu build ulang.
 - State owner jetlink di comma: `/data/jetlink-owner-state` (sebelumnya
   `/dev/shm`, hilang tiap reboot).
 - Katalog model besar: chestnut v27, selector 19 dan 20 diterima
