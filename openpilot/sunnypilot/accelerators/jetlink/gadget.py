@@ -150,8 +150,9 @@ DORMANT = Path("/dev/shm/jetlink-dormant")
 SHUTDOWN_REQUEST = Path("/dev/shm/jetlink-shutdown")
 # what a provisioning run leaves for the owner: whether the far end suspends
 # when the gadget goes, and whether the run left anything undone. The owner
-# never speaks the protocol, so it cannot learn either for itself
-STATE = Path("/dev/shm/jetlink-owner-state")
+# never speaks the protocol, so it cannot learn either for itself. On /data so
+# what the server said survives a reboot; /dev/shm put it back to "sleeps"
+STATE = Path("/data/jetlink-owner-state")
 
 
 def repo_root() -> Path:

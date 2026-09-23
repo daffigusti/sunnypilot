@@ -65,8 +65,17 @@ class Jetlinkd:
     self.warp_thread: threading.Thread | None = None
     # does the far end suspend when the gadget goes? From the server's hello.
     # The owner needs it to decide whether letting go is worth what it costs,
-    # and cannot ask: it never speaks the protocol
-    self.server_sleeps = True
+    # and cannot ask: it never speaks the protocol. Starts from what the last
+    # hello said: a run with nothing to do never says hello, and writing the
+    # "sleeps" default back released an awake Mac a minute into every park
+    self.server_sleeps = self.last_known_sleeps()
+
+  @staticmethod
+  def last_known_sleeps() -> bool:
+    try:
+      return float(json.loads(gadget.STATE.read_text())['sleep_after']) > 0
+    except (OSError, ValueError, TypeError, KeyError):
+      return True   # never heard from it: assume a Jetson that sleeps
 
   # -- lifecycle ------------------------------------------------------------
 

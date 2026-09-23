@@ -383,6 +383,18 @@ class TestTheRun(unittest.TestCase):
     d.run()
     assert self.state()['sleep_after'] == 0.0
 
+  def test_a_round_with_nothing_to_do_keeps_what_the_last_hello_said(self):
+    # no hello this round; the default must not overwrite a server that stays up
+    gadget.STATE.write_text(json.dumps({'sleep_after': 0.0, 'unfinished': False}))
+    d = self.worker(work=False)
+    d.run()
+    assert self.state()['sleep_after'] == 0.0
+
+  def test_a_far_end_never_heard_from_is_assumed_to_sleep(self):
+    d = self.worker(work=False)
+    d.run()
+    assert self.state()['sleep_after'] == 1.0
+
   def test_a_shutdown_request_is_the_whole_round(self):
     d = self.worker()
     jetlinkd.helpers.pending_shutdown.return_value = 'car battery'
