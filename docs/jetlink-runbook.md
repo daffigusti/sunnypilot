@@ -1,7 +1,8 @@
 # Jetlink di Chery Omoda E5: runbook
 
-Catatan hasil pengujian 22 September 2026. Comma 3X (tizi), MacBook Pro 16
-inci M3 Max, branch `feature/chery-jetlink`, model besar default (BMRLNAP v4).
+Catatan hasil pengujian 22 dan 23 September 2026. Comma 3X (tizi), MacBook
+Pro 16 inci M3 Max, branch `feature/chery-jetlink`, model besar default
+(BMRLNAP v4) dan Cinque Terre V3.
 
 ## Urutan pakai di mobil
 
@@ -62,7 +63,48 @@ charger wajib.
 | slow frame melonjak, gpu 60 sampai 110 ms, link tidak putus | aplikasi lain rebutan GPU Mac | tutup Chrome, Termius, tab Logs |
 | alert Low Memory | pemakaian comma di atas 90% | sudah turun ke 87% setelah pool tinygrad dimatikan; matikan `OsmLocal` kalau peta offline tidak dipakai |
 | comma reboot saat model besar join | tegangan drop (UVLO) | colok kabel Mac setelah comma boot |
-| `link closed: LIBUSB_ERROR_IO` lalu `waiting for a jetlink gadget` saat offroad | comma lepas gadget karena idle, normal | tidak perlu apa-apa |
+| "waiting for comma" saat parkir, kabel tercolok, Mac tidak melihat device USB apa pun | comma melepas gadget 60 s setelah idle karena mengira Mac ikut tidur (sudah difix, `97805f474`) | kalau muncul lagi: cek `/data/jetlink-owner-state`, harus `sleep_after: 0.0` |
+| ikon GPU tetap hijau setelah kabel dicabut di ujung Mac | comma 3X tidak melihat disconnect, UDC tetap `configured` sampai colokan berikutnya (UI sudah membaca iklan arus Type-C, `b92380e07`) | colok ulang cukup, tidak perlu toggle |
+| ganti model besar tidak berpengaruh, log `no catalog model for ...` | katalog chestnut v27 bertanda selector 20 dan dulu dibuang semua (sudah difix, `d86a25232`) | pilih ulang model sekali setelah update |
+| link putus saat lid ditutup atau Mac di baterai | clamshell sleep atau idle sleep macOS | charger tetap tercolok; lid tertutup butuh `sudo pmset -a disablesleep 1` |
+| Mac hanya melihat `panda` (3801:ddcc), bukan `jetlink` (1209:0001) | kabel masuk jalur panda, bukan port data comma | pindah ke port yang benar |
+
+## Kalau "waiting for comma" muncul lagi
+
+Jangan toggle atau cabut dulu: keduanya menghapus jejaknya. Ambil ini dulu.
+
+Di comma:
+
+```bash
+cat /sys/class/udc/*/state                       # configured / not attached / default
+cat /sys/class/power_supply/usb/typec_mode       # Mac tercolok: "high current"
+cat /data/jetlink-owner-state                    # sleep_after harus 0.0
+ls /dev/shm/jetlink-dormant 2>/dev/null          # ada = owner sengaja melepas gadget
+tail -20 /data/log/jetlink-owner.log
+dmesg | grep -E "usbpd|USB_STATE|configfs" | tail
+```
+
+Di Mac:
+
+```bash
+system_profiler SPUSBHostDataType | grep -A6 -iE "jetlink|panda"
+tail -20 ~/Library/Logs/Jetlink/server.log
+```
+
+Cara membaca:
+
+- `waiting for a jetlink gadget` di Mac artinya macOS sama sekali tidak melihat
+  comma; `could not open the gadget` artinya terlihat tapi gagal dibuka.
+- Owner log `releasing the gadget so the jetson can sleep` sementara Mac
+  menyala: state `sleep_after` salah lagi.
+- `typec_cc_orientation` dan `pd_active` di tizi mengikuti jalur daya
+  harness, bukan kabel Mac. Jangan dipakai untuk menilai kabel.
+- Mencabut ujung Mac: comma hanya mencatat `Type-C Source (default)`, disconnect
+  baru tercatat saat dicolok lagi. Tes 23 September: colok ulang di ujung Mac
+  berhasil 3 dari 3 walau UDC masih `configured`.
+
+Owner yang dihentikan manual (SIGINT) tidak dijalankan ulang oleh manager.
+Setelah update kode di comma, reboot saat offroad.
 
 ## Apa yang ada di mana
 
@@ -72,8 +114,15 @@ charger wajib.
 - opendbc fork, branch `feature/chery-jetlink`: merge opendbc zoompilot, wajib
   karena kode car dan selfdrived zoompilot mengimpornya saat boot.
 - jetlink fork, branch `keep-gpu-busy`: keeper clock GPU dan fix sesi hantu.
-  Jetlink.app di Mac adalah build sendiri dari branch ini (`make -C macos app`),
-  app resmi tersimpan di `/Applications/Jetlink-prev.app`.
+  Branch `stateful-models` di atasnya menambah model yang membawa history
+  sendiri (Cinque Terre V3). Jetlink.app di Mac adalah build sendiri dari
+  `stateful-models` (`make -C macos app`), app resmi tersimpan di
+  `/Applications/Jetlink-prev.app`.
+- State owner jetlink di comma: `/data/jetlink-owner-state` (sebelumnya
+  `/dev/shm`, hilang tiap reboot).
+- Katalog model besar: chestnut v27, selector 19 dan 20 diterima
+  (`SUPPORTED_JSON_VERSIONS` di `sunnypilot/models/helpers.py`). Upstream masih
+  v25; saat merge `origin/master`, jaga URL v27 dan daftar versi ini.
 
 Update ke depan: merge `origin/master` sunnypilot seperti biasa; untuk jetlink,
 fetch `zoompilot/jetson-trt` dan merge, opendbc sama. Di comma updater mati
