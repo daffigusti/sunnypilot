@@ -149,6 +149,40 @@ class TestDormant(unittest.TestCase):
       (self.tmp / 'cc').write_text('0')
       assert not helpers.gadget_present()
 
+  def test_a_host_unplugged_at_its_end_is_gone_though_the_udc_says_configured(self):
+    mode = self.tmp / 'typec_mode'
+    attached = mock.Mock(return_value=True)
+    with mock.patch.object(gadget, 'link_endpoint', return_value=None), \
+         mock.patch.object(gadget, 'dormant', return_value=False), \
+         mock.patch.object(gadget, 'host_attached', attached), \
+         mock.patch.object(gadget, 'TYPEC_MODE', mode), \
+         mock.patch.object(helpers, 'PRESENCE_HOLD', 0.0):
+      helpers._last_configured = 0.0
+      helpers._best_advert = 0
+      for m in ('Source attached (medium current)', 'Source attached (high current)'):
+        mode.write_text(m)
+        assert helpers.gadget_present()
+      mode.write_text('Source attached (default current)')
+      assert not helpers.gadget_present(), 'a Mac unplugged at its end still read as present'
+      # the replug is a real disconnect and a fresh attach
+      attached.return_value = False
+      assert not helpers.gadget_present()
+      attached.return_value = True
+      mode.write_text('Source attached (high current)')
+      assert helpers.gadget_present()
+
+  def test_a_host_that_only_advertises_the_default_reads_as_before(self):
+    mode = self.tmp / 'typec_mode'
+    mode.write_text('Source attached (default current)')
+    with mock.patch.object(gadget, 'link_endpoint', return_value=None), \
+         mock.patch.object(gadget, 'dormant', return_value=False), \
+         mock.patch.object(gadget, 'host_attached', return_value=True), \
+         mock.patch.object(gadget, 'TYPEC_MODE', mode):
+      helpers._best_advert = 0
+      assert helpers.gadget_present()
+      mode.unlink()   # a port that cannot say
+      assert helpers.gadget_present()
+
   def test_shutdown_request_round_trip(self):
     assert helpers.pending_shutdown() is None
     assert helpers.request_shutdown('car battery')

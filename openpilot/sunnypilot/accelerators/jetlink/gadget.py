@@ -142,6 +142,7 @@ UDC_PATH = Path("/sys/class/udc")
 GADGET_STATUS = Path("/dev/shm/jetlink-gadget")
 GADGET_SETUP_TIMEOUT = 30.0
 CC_ORIENTATION = Path('/sys/class/power_supply/usb/typec_cc_orientation')
+TYPEC_MODE = Path('/sys/class/power_supply/usb/typec_mode')
 # the owner's pid while it has released the gadget on purpose so the Jetson can
 # sleep. Presence comes from this, not the UDC; a marker whose writer is dead is
 # a leftover from a kill
@@ -215,6 +216,24 @@ def port_has_host() -> bool:
     return int(CC_ORIENTATION.read_text()) != 0
   except (OSError, ValueError):
     return False
+
+
+_ADVERTS = {'default current': 1, 'medium current': 2, 'high current': 3}
+
+
+def host_advert() -> int | None:
+  """How much current the host on the cable advertises: 1 default, 2 medium
+  (1.5 A), 3 high (3 A), 0 for no source. None where the port cannot say.
+
+  Pulling the cable out at the host end is no disconnect here: VBUS stays up
+  and the UDC reads configured until the next plug. What does change is this,
+  a Mac's 3 A dropping to default. See helpers.gadget_present.
+  """
+  try:
+    mode = TYPEC_MODE.read_text()
+  except OSError:
+    return None
+  return next((rank for name, rank in _ADVERTS.items() if name in mode), 0)
 
 
 # how long the UDC may sit half enumerated with a host on the cable before the

@@ -104,6 +104,8 @@ def await_shutdown(timeout: float) -> bool:
 # this design still costs: see Jetlinkd.settle
 PRESENCE_HOLD = 5.0
 _last_configured = 0.0
+# the most current the host has advertised since it last configured us
+_best_advert = 0
 
 
 def gadget_present() -> bool:
@@ -111,17 +113,28 @@ def gadget_present() -> bool:
 
   True once something holds the gadget open and a host has configured us,
   held for PRESENCE_HOLD after that stops.
+
+  A configured UDC is not enough: unplugged at the host end, the comma sees no
+  disconnect and stays configured until the next plug, which left the icon
+  green for half an hour. The host's current advertisement falling below what
+  it offered on this attach is that unplug. A host that only ever advertises
+  the default cannot be told apart, and reads as before.
   """
-  global _last_configured
+  global _last_configured, _best_advert
   if gadget.link_endpoint() is not None:
     return True
   if gadget.dormant():
     # no enumeration during suspend; the CC line still tells a sleeping host from an unplugged one
     return gadget.port_has_host()
   now = time.monotonic()
-  if gadget.host_attached():
-    _last_configured = now
-    return True
+  if not gadget.host_attached():
+    _best_advert = 0   # the next attach sets its own bar
+  else:
+    advert = gadget.host_advert()
+    _best_advert = max(_best_advert, advert or 0)
+    if advert is None or advert >= _best_advert:
+      _last_configured = now
+      return True
   return now - _last_configured < PRESENCE_HOLD
 
 
