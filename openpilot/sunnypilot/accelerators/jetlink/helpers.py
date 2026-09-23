@@ -205,10 +205,10 @@ def catalog() -> list[dict]:
   param thread, so nothing escapes.
   """
   try:
-    from openpilot.sunnypilot.models.helpers import REQUIRED_JSON_VERSION
+    from openpilot.sunnypilot.models.helpers import SUPPORTED_JSON_VERSIONS
     bundles = (params().get(CATALOG_PARAM) or {}).get('bundles', [])
     found = [b for b in bundles if _REF.fullmatch(str(b.get('ref')))
-             and int(b.get('minimum_selector_version', 0)) == REQUIRED_JSON_VERSION]
+             and int(b.get('minimum_selector_version', 0)) in SUPPORTED_JSON_VERSIONS]
   except Exception:
     cloudlog.exception("jetlink: could not read the big-model catalog")
     return []

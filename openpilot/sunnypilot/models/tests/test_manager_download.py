@@ -602,6 +602,14 @@ class TestSourceCacheIntegrity(OpenpilotTestCase):
       assert [bundle.ref for bundle in fetcher.get_bundles_for_source("qcom")] == ["aaa"]
       assert [bundle.ref for bundle in fetcher.get_bundles_for_source("chestnut")] == ["bbb"]
 
+  def test_the_chestnut_v27_catalog_parses(self):
+    """v27 marks every bundle selector 20. Parsing it to nothing left the
+    big-model pick unresolvable: the download ref sat there and the slot stayed
+    empty, whatever the user picked."""
+    big = manifest_bundle("ctv3m", "bf3e", is_big=True)
+    big["minimum_selector_version"] = "20"
+    assert [b.ref for b in ModelParser.parse_models({"bundles": [big]})] == ["bf3e"]
+
   def test_stale_version_cache_is_refetched(self):
     """A source-matching cache whose bundles are all filtered by the selector version
     check parses to zero valid bundles; it is stale (e.g. an old manifest) and must be
