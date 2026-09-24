@@ -57,13 +57,18 @@ def register(show_spinner=False) -> str | None:
     imei: str | None = None
     while imei is None:
       try:
-        imei = HARDWARE.get_imei()
+        # modem state reports '' until the modem is up; Konik hashes the imei into the dongle id, so wait for a real one
+        imei = HARDWARE.get_imei() or ("" if PC else None)
       except Exception:
         cloudlog.exception("Error getting imei, trying again...")
-        time.sleep(1)
 
-      if time.monotonic() - start_time > 60 and show_spinner:
-        spinner.update(f"registering device - serial: {serial}, IMEI: {imei}")
+      if imei is None:
+        # ponytail: give up after 60s so a device without a modem still registers, with an empty imei
+        if time.monotonic() - start_time > 60:
+          cloudlog.warning("no imei after 60s, registering without one")
+          imei = ""
+        else:
+          time.sleep(1)
 
     backoff = 0
     start_time = time.monotonic()
