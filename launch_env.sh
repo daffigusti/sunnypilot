@@ -20,3 +20,7 @@ if [ -z "$AGNOS_VERSION" ]; then
 fi
 
 export STAGING_ROOT="/data/safe_staging"
+
+# Konik (stable.konik.ai) backend; set here so every launch path gets it, not just launch_openpilot.sh
+export API_HOST=https://api.konik.ai
+export ATHENA_HOST=wss://athena.konik.ai
