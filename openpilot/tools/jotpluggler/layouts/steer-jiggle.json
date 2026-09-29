@@ -1,0 +1,48 @@
+{
+ "current_tab_index": 0,
+ "tabs": [
+  {
+   "name": "Steer jiggle",
+   "root": {
+    "split": "vertical",
+    "sizes": [0.42, 0.28, 0.15, 0.15],
+    "children": [
+     {
+      "split": "horizontal",
+      "sizes": [0.5, 0.5],
+      "children": [
+       {"kind": "camera", "camera_view": "qroad", "title": "Road Camera", "curves": []},
+       {
+        "title": "Driver torque",
+        "curves": [
+         {"name": "/carState/steeringTorque", "color": "#e0a030"}
+        ]
+       }
+      ]
+     },
+     {
+      "title": "Steering angle [deg]  model (carControl) / carcontroller (carOutput) / EPS actual (carState)",
+      "curves": [
+       {"name": "/carControl/actuators/steeringAngleDeg", "color": "#4aa3ff"},
+       {"name": "/carOutput/actuatorsOutput/steeringAngleDeg", "color": "#ffa53a"},
+       {"name": "/carState/steeringAngleDeg", "color": "#5fd38d"}
+      ]
+     },
+     {
+      "title": "latActive / steeringPressed",
+      "curves": [
+       {"name": "/carControl/latActive", "color": "#2e9e5b"},
+       {"name": "/carState/steeringPressed", "color": "#e0a030"}
+      ]
+     },
+     {
+      "title": "vEgo [m/s]",
+      "curves": [
+       {"name": "/carState/vEgo", "color": "#c9ccd1"}
+      ]
+     }
+    ]
+   }
+  }
+ ]
+}
