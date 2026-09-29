@@ -1,0 +1,158 @@
+diff --git a/core/openpilot_bootstrap.py b/core/openpilot_bootstrap.py
+index 04eee76..580cf32 100644
+--- a/core/openpilot_bootstrap.py
++++ b/core/openpilot_bootstrap.py
+@@ -183,13 +183,23 @@ def bootstrap_openpilot(openpilot_dir: Path) -> None:
+     _run(sync_cmd, cwd=openpilot_dir)
+     ensure_macos_env_fix(openpilot_dir)
+ 
+-    scons_targets = [
+-        "msgq_repo/msgq/ipc_pyx.so",
+-        "msgq_repo/msgq/visionipc/visionipc_pyx.so",
+-        "common/params_pyx.so",
+-        "selfdrive/controls/lib/longitudinal_mpc_lib/c_generated_code/acados_ocp_solver_pyx.so",
+-        "selfdrive/controls/lib/lateral_mpc_lib/c_generated_code/acados_ocp_solver_pyx.so",
+-    ]
++    if (openpilot_dir / "openpilot" / "common").is_dir():
++        # openpilot after #38219 (2026-06) nests everything under openpilot/, and #38411 made params a ctypes lib
++        lib_suffix = ".dylib" if sys.platform == "darwin" else ".so"
++        scons_targets = [
++            "msgq_repo/msgq/ipc_pyx.so",
++            "msgq_repo/msgq/visionipc/visionipc_pyx.so",
++            f"openpilot/common/libparams_c{lib_suffix}",
++            "openpilot/selfdrive/controls/lib/longitudinal_mpc_lib/c_generated_code/acados_ocp_solver_pyx.so",
++        ]
++    else:
++        scons_targets = [
++            "msgq_repo/msgq/ipc_pyx.so",
++            "msgq_repo/msgq/visionipc/visionipc_pyx.so",
++            "common/params_pyx.so",
++            "selfdrive/controls/lib/longitudinal_mpc_lib/c_generated_code/acados_ocp_solver_pyx.so",
++            "selfdrive/controls/lib/lateral_mpc_lib/c_generated_code/acados_ocp_solver_pyx.so",
++        ]
+     scons_cmd = [uv_bin, "run", "--no-sync"]
+     if python_executable:
+         scons_cmd.extend(["--python", python_executable])
+diff --git a/core/route_downloader.py b/core/route_downloader.py
+index c221a0d..8fc12fb 100644
+--- a/core/route_downloader.py
++++ b/core/route_downloader.py
+@@ -1,3 +1,4 @@
++import os
+ import argparse
+ import bz2
+ import parfive
+@@ -185,7 +186,8 @@ def downloadSegments(
+     # E.g https://api.commadotai.com/v1/route/a2a0ccea32023010|2023-07-27--13-01-19/files
+     # Make route URL encoded
+     route_url = route.replace("|", "%7C")
+-    filelist_url = f"https://api.commadotai.com/v1/route/{route_url}/files"
++    # API_HOST points at a comma-compatible backend (e.g. https://api.konik.ai), same variable openpilot tools use
++    filelist_url = f"{os.environ.get('API_HOST', 'https://api.commadotai.com')}/v1/route/{route_url}/files"
+     print(f"Downloading file list from {filelist_url}")
+ 
+     # Check if the route is accessible
+diff --git a/core/route_inputs.py b/core/route_inputs.py
+index 507326a..7b12cc2 100644
+--- a/core/route_inputs.py
++++ b/core/route_inputs.py
+@@ -141,7 +141,7 @@ def parseAbsoluteTimeUrl(
+     # https://api.comma.ai/v1/devices/a2a0ccea32023010/routes_segments?end=1690488851596&start=1690488081496
+ 
+     # Make the API call
+-    api_url = f"https://api.comma.ai/v1/devices/{dongle_id}/routes_segments?end={end_time}&start={start_time}"
++    api_url = f"{os.environ.get('API_HOST', 'https://api.comma.ai')}/v1/devices/{dongle_id}/routes_segments?end={end_time}&start={start_time}"
+     import requests
+ 
+     if jwt_token:
+diff --git a/renderers/big_ui_engine.py b/renderers/big_ui_engine.py
+index 958aae6..e2cdda3 100644
+--- a/renderers/big_ui_engine.py
++++ b/renderers/big_ui_engine.py
+@@ -1439,6 +1439,11 @@ def build_camera_frame_refs(
+     refs_by_frame_id: dict[int, CameraFrameRef] = {}
+     refs_by_timestamp: dict[int, CameraFrameRef] = {}
+ 
++    # newer logs name the road camera "narrowRoad"; qcamera shares its frame ids
++    renamed = {"roadEncodeIdx": "narrowRoadEncodeIdx"}.get(encode_service)
++    if renamed and not any(msg.which() == encode_service for messages in messages_by_segment for msg in messages):
++        encode_service = renamed
++
+     for segment_index, messages in enumerate(messages_by_segment):
+         local_index = 0
+         for msg in messages:
+@@ -3007,7 +3012,13 @@ def clip(
+ ) -> None:
+     import tqdm
+     import pyray as rl
+-    from msgq.visionipc import VisionIpcServer, VisionStreamType
++    from msgq.visionipc import VisionIpcServer
++    try:
++        from msgq.visionipc import VisionStreamType
++    except ImportError:
++        # newer openpilot moved the stream enum into cereal and renamed ROAD to NARROW_ROAD
++        from openpilot.cereal.visionipc import VisionStreamType
++    road_stream = getattr(VisionStreamType, "VISION_STREAM_ROAD", None) or VisionStreamType.VISION_STREAM_NARROW_ROAD
+     from openpilot.common.prefix import OpenpilotPrefix
+     from openpilot.common.utils import Timer
+     from openpilot.selfdrive.ui import UI_BORDER_SIZE
+@@ -3060,7 +3071,7 @@ def clip(
+             )
+ 
+         vipc = VisionIpcServer("camerad")
+-        vipc.create_buffers(VisionStreamType.VISION_STREAM_ROAD, 4, road_frame_queue.frame_w, road_frame_queue.frame_h)
++        vipc.create_buffers(road_stream, 4, road_frame_queue.frame_w, road_frame_queue.frame_h)
+         if wide_frame_queue is not None:
+             vipc.create_buffers(VisionStreamType.VISION_STREAM_WIDE_ROAD, 4, wide_frame_queue.frame_w, wide_frame_queue.frame_h)
+         vipc.start_listener()
+@@ -3123,7 +3134,7 @@ def clip(
+         road_view = AugmentedRoadView()
+         wide_view = None
+         if layout_rects.wide_rect is not None:
+-            road_view = AugmentedRoadView(stream_type=VisionStreamType.VISION_STREAM_ROAD)
++            road_view = AugmentedRoadView(stream_type=road_stream)
+             road_view._switch_stream_if_needed = lambda sm: None
+             road_pm = getattr(road_view, "_pm", None)
+             if road_pm is not None:
+@@ -3173,7 +3184,7 @@ def clip(
+                     if camera_ref != step.camera_ref:
+                         raise RuntimeError(f"Camera frame order mismatch: expected {step.camera_ref}, got {camera_ref}")
+                     vipc.send(
+-                        VisionStreamType.VISION_STREAM_ROAD,
++                        road_stream,
+                         frame_bytes,
+                         camera_ref.route_frame_id,
+                         camera_ref.timestamp_sof,
+diff --git a/renderers/ui_renderer.py b/renderers/ui_renderer.py
+index c789bf7..9befdba 100644
+--- a/renderers/ui_renderer.py
++++ b/renderers/ui_renderer.py
+@@ -246,7 +246,8 @@ def _run(cmd: list[str], cwd: str | Path | None = None, env: dict[str, str] | No
+ 
+ 
+ def _has_modern_openpilot(openpilot_dir: Path) -> bool:
+-    return (openpilot_dir / "tools/clip/run.py").exists()
++    # the nested openpilot/ layout (#38219) moved tools/ too
++    return any((openpilot_dir / rel).exists() for rel in ("tools/clip/run.py", "openpilot/tools/clip/run.py"))
+ 
+ 
+ def _openpilot_python_cmd(openpilot_dir: Path) -> list[str]:
+@@ -265,7 +266,8 @@ def _ensure_fonts(openpilot_dir: Path) -> None:
+         if candidate.exists():
+             fonts_dir = candidate
+             break
+-    if fonts_dir is None:
++    if fonts_dir is None or not (fonts_dir / "process.py").exists():
++        # newer openpilot loads the .ttf files directly and ships no .fnt step
+         return
+ 
+     needed = (
+@@ -278,7 +280,7 @@ def _ensure_fonts(openpilot_dir: Path) -> None:
+     )
+     if all((fonts_dir / filename).exists() for filename in needed):
+         return
+-    _run([*_openpilot_python_cmd(openpilot_dir), "selfdrive/assets/fonts/process.py"], cwd=openpilot_dir)
++    _run([*_openpilot_python_cmd(openpilot_dir), str(fonts_dir / "process.py")], cwd=openpilot_dir)
+ 
+ 
+ def _trim_mp4_in_place(path: Path, trim_start_seconds: int) -> None:
