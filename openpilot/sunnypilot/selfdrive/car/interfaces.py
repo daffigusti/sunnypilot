@@ -17,6 +17,7 @@ from openpilot.sunnypilot.selfdrive.controls.lib.speed_limit.helpers import set_
 import openpilot.system.sentry as sentry
 
 from openpilot.sunnypilot.sunnylink.statsd import STATSLOGSP
+from openpilot.sunnypilot.selfdrive.car.intelligent_cruise_button_management.helpers import icbm_applicable
 
 
 def log_fingerprint(CP: structs.CarParams) -> None:
@@ -39,8 +40,7 @@ def _seed_mazda_torque_defaults(CP: structs.CarParams, params: Params | None = N
   survives to here. The three toggles are seeded once behind MazdaTorqueDefaultsApplied. The
   tune is seeded once per value of MAZDA_STEER_TO_ZERO_TORQUE_TUNE, recorded in
   MazdaTorqueTuneSeeded, so a later bump moves everyone again while a choice made after the
-  seed is kept. The declared default is 2.0 now, so the seed only moves devices that
-  materialized the earlier 0.0.
+  seed is kept. TorqueControlTune's declared default stays 0.0 for every other brand.
   """
   if params is None:
     params = Params()
@@ -112,7 +112,7 @@ def _initialize_intelligent_cruise_button_management(CP: structs.CarParams, CP_S
     params = Params()
 
   icbm_enabled = params.get_bool("IntelligentCruiseButtonManagement")
-  if icbm_enabled and CP_SP.intelligentCruiseButtonManagementAvailable and not CP.openpilotLongitudinalControl:
+  if icbm_enabled and icbm_applicable(CP, CP_SP):
     CP_SP.pcmCruiseSpeed = False
 
 
@@ -136,8 +136,8 @@ def _cleanup_unsupported_params(CP: structs.CarParams, CP_SP: structs.CarParamsS
     params.remove("EnforceTorqueControl")
     params.remove("LateralJerkTorqueController")
 
-  if not CP_SP.intelligentCruiseButtonManagementAvailable or CP.openpilotLongitudinalControl:
-    cloudlog.warning("ICBM not available or openpilot Longitudinal Control enabled, cleaning up params")
+  if not icbm_applicable(CP, CP_SP):
+    cloudlog.warning("ICBM not applicable, cleaning up params")
     params.remove("IntelligentCruiseButtonManagement")
 
   if not CP.openpilotLongitudinalControl and CP_SP.pcmCruiseSpeed:

@@ -364,12 +364,15 @@ struct OnroadEventSP @0xda96579883444c35 {
     bigModelReady @25;
     controlsMismatchLateralWarning @26;
     silentPedalPressed @27;
-    bigModelAvailable @28;
-    bigModelLinkLost @29;
-    mazdaStockCtsActive @30;
-    stockEcuNotReady @31;
-    stockEcuInitializing @32;
-    stockEcuReady @33;
+    mazdaStockCtsActive @28;
+    stockEcuNotReady @29;
+    stockEcuInitializing @30;
+    stockEcuReady @31;
+    bigModelAvailable @32;
+    bigModelLinkLost @33;
+    stockLkasOff @34;
+    longitudinalEnableChime @35;
+    longitudinalDisableChime @36;
   }
 }
 
@@ -487,15 +490,12 @@ struct ModelDataV2SP @0xa1680744031fdb2d {
   leftLaneChangeEdgeBlock @1 :Bool;
   rightLaneChangeEdgeBlock @2 :Bool;
 
-  # A late-loading big model is connected and waiting for disengagement.
-  # This is availability, not proof of inference; modelV2.big reports execution.
-  # Startup-only runners and older logs leave this false.
-  bigModelAvailable @3 :Bool;
+  bigModelAvailableDEPRECATED @3 :Bool;  # acceleratorState ready says it; ordinal kept for old logs
 
   # Runtime state of an off-board accelerator (sunnypilot/accelerators). Offroad
   # progress stays in the AcceleratorProgress param; telemetry waits for a customReserved slot.
   acceleratorState @4 :AcceleratorState;
-  acceleratorName @5 :Text;
+  acceleratorNameDEPRECATED @5 :Text;  # always jetlink; ordinal kept for old logs
 
   enum AcceleratorState {
     none @0;
@@ -565,6 +565,9 @@ struct CarStateZP @0xc879af11c43cb400 {
   # at carState rate: the driver's view of the ECU openpilot stands in for. ready is the
   # vehicle's own silence guard, never a session acknowledgement.
   stockEcu @1 :StockEcuState;
+  # The wheel's "farther" distance button, level. Upstream's one gapAdjustCruise button type
+  # cycles the personality one way; selfdrived steps it the other way on this release.
+  distanceFarther @2 :Bool;
 
   enum StockEcuState {
     notNeeded @0;

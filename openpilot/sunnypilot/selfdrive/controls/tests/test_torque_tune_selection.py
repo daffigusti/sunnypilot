@@ -9,9 +9,9 @@ See the LICENSE.md file in the root directory for more details.
 # dropping `return_default=True` from the params read: params_keys.h declares a default, but
 # a bare params.get() returns None for an unset param, and float(None) raises, or, guarded,
 # can otherwise fall through to the upstream controller without an explicit error.
-# The declared defaults are v2 for the small model and v1 for a big one (2026-09-11); the
-# steer-to-zero Mazdas are also seeded to 2.0 by _seed_mazda_torque_defaults, which moves
-# devices that materialized the earlier 0.0 default.
+# The small model's declared default is upstream's 0.0; the steer-to-zero Mazdas are seeded to
+# 2.0 by _seed_mazda_torque_defaults instead, so other brands never inherit a tune fitted to
+# that EPS. A big model's is v1 for every brand.
 #
 # The v0 constructor is patched out: these tests pin the branch that gets taken, not the
 # controller's behavior, and building the real one pulls in NNLC model loading.
@@ -28,7 +28,7 @@ from openpilot.cereal import custom
 from openpilot.common.params import Params
 from openpilot.common.prefix import OpenpilotPrefix
 from openpilot.sunnypilot.selfdrive.controls import controlsd_ext
-from openpilot.sunnypilot.selfdrive.controls.controlsd_ext import ControlsExt
+from openpilot.sunnypilot.selfdrive.controls.controlsd_ext import TUNE_SWAP_INACTIVE_FRAMES, ControlsExt
 
 class FakeLaC(str):
   """A controller stand-in that compares as its version label and counts resets."""
@@ -69,7 +69,8 @@ def ctx(monkeypatch):
     CP = car.CarParams.new_message(steerControlType="torque")
     CP.lateralTuning.init('torque')
     controls = SimpleNamespace(params=params, CP=CP.as_reader(),
-                               CP_SP=custom.CarParamsSP.new_message().as_reader())
+                               CP_SP=custom.CarParamsSP.new_message().as_reader(),
+                               _inactive_frames=TUNE_SWAP_INACTIVE_FRAMES)
     yield params, controls
 
 
@@ -85,8 +86,9 @@ def swap(controls, big: bool):
 
 class TestTorqueTuneSelection:
   def test_declared_defaults(self):
-    """v2 for the small model, v1 for a big one."""
-    assert declared_default("TorqueControlTune") == 2.0
+    """Upstream's v0 for the small model, so other brands never inherit the Mazda tune through
+    the default (the Mazdas are seeded, test_torque_defaults_seed.py); v1 for a big one."""
+    assert declared_default("TorqueControlTune") == 0.0
     assert declared_default("TorqueControlTuneBig") == 1.0
 
   def test_unset_selects_the_declared_default(self, ctx):
@@ -164,6 +166,46 @@ class TestTorqueTuneSelection:
     swap(controls, big=False)
     assert controls.LaC == BY_VERSION[small] and controls.LaC.resets == 1
 
+  def test_a_hand_back_while_steering_keeps_the_tune_that_steers(self, ctx):
+    """2026-09-29: every big-to-small hand-back while steering stepped the commanded torque
+    by 0.09 to 0.19 in one tick, from switching to the idle controller's stale state. The
+    controller that steers carries the small model until lateral has been inactive for
+    TUNE_SWAP_INACTIVE_FRAMES in a row: a one-frame drop or a 0.3 s one keeps it."""
+    params, controls = ctx
+    params.put("TorqueControlTune", 2.0, block=True)
+    params.put("TorqueControlTuneBig", 1.0, block=True)
+    select(controls)
+    swap(controls, big=True)            # swapped in with nothing in control
+    big = controls.LaC
+
+    def frame(lat_active):
+      ControlsExt.note_lat_active(controls, lat_active)
+      swap(controls, big=False)
+
+    assert big == V1 and big.resets == 1
+    for gap in (0, 1, 30, TUNE_SWAP_INACTIVE_FRAMES - 1):
+      for _ in range(20):               # handed back while steering
+        frame(True)
+      for _ in range(gap):              # a steer fault flicker, a short blinker pause
+        frame(False)
+      frame(True)
+      assert controls.LaC is big and big.resets == 1, f"swapped after a {gap}-frame gap"
+    for _ in range(TUNE_SWAP_INACTIVE_FRAMES):   # half a second off: a disengage, a stop
+      frame(False)
+    assert controls.LaC == V2 and controls.LaC.resets == 1
+    for _ in range(10):                 # and the next engagement is on the small tune
+      frame(True)
+    assert controls.LaC == V2 and controls.LaC.resets == 1
+
+  def test_switching_while_inactive_is_unchanged(self, ctx):
+    params, controls = ctx
+    params.put("TorqueControlTune", 2.0, block=True)
+    params.put("TorqueControlTuneBig", 1.0, block=True)
+    select(controls)
+    for big, tune in ((True, V1), (False, V2), (True, V1)):
+      swap(controls, big=big)
+      assert controls.LaC == tune
+
   def test_enforce_off_ignores_the_big_tune(self, ctx):
     """The enforce-off v0 forcing applies to both sizes."""
     params, controls = ctx
@@ -187,3 +229,16 @@ class TestTorqueTuneSelection:
     assert shown in set(versions_by_label().values()), \
       "the declared default must be a version the selectors offer"
     assert BY_VERSION[shown] == select(controls)
+
+  @pytest.mark.parametrize(("small", "big", "enforce", "expected"), [
+    (2.0, 2.0, True, False), (2.0, 1.0, True, True), (0.0, 2.0, True, True), (2.0, 2.0, False, True)])
+  def test_jerk_aware_has_effect_unless_every_size_runs_v2(self, ctx, small, big, enforce, expected):
+    """v2 forces the jerk-aware controller off, so its toggle only locks when both sizes run
+    v2; with Enforce Torque Control off both run v0."""
+    from openpilot.sunnypilot.selfdrive.controls.lib.torque_tune import jerk_aware_has_effect
+
+    params, _ = ctx
+    params.put_bool("EnforceTorqueControl", enforce, block=True)
+    params.put("TorqueControlTune", small, block=True)
+    params.put("TorqueControlTuneBig", big, block=True)
+    assert jerk_aware_has_effect(params) is expected

@@ -44,6 +44,14 @@ def params(gui):
   return p
 
 
+def jetlink_status(**fields):
+  """jetlink's snapshot as the UI's params pass takes it, nothing to show unless a field says so."""
+  from jetlink.openpilot import Status
+  base = {'enabled': False, 'mode': 'off', 'transport': 'USB', 'present': False, 'port': None, 'ready': False,
+          'reason': None, 'progress': None, 'model': None, 'default_model': None}
+  return Status(**{**base, **fields})
+
+
 def render(widget):
   """Drive one frame through Widget.render, which calls _update_state."""
   import pyray as rl
@@ -350,6 +358,21 @@ class TestJerkAwareToggle:
     render(layout._tq_view)
     assert layout._jerk_aware_toggle.enabled
 
+  def test_jerk_aware_locked_while_every_model_size_runs_v2(self, params):
+    """v2 forces the jerk-aware controller off; one size on another tune keeps it meaningful."""
+    from openpilot.selfdrive.ui.sunnypilot.mici.layouts.steering import SteeringLayoutMici
+
+    params.put_bool("EnforceTorqueControl", True, block=True)
+    params.put("TorqueControlTune", 2.0, block=True)
+    params.put("TorqueControlTuneBig", 2.0, block=True)
+    layout = SteeringLayoutMici()
+    render(layout._tq_view)
+    assert not layout._jerk_aware_toggle.enabled
+
+    params.put("TorqueControlTuneBig", 1.0, block=True)
+    render(layout._tq_view)
+    assert layout._jerk_aware_toggle.enabled
+
   def test_nnlc_locked_while_jerk_aware_on(self, params):
     from opendbc.car.structs import car
     from openpilot.selfdrive.ui.sunnypilot.mici.layouts.steering import SteeringLayoutMici
@@ -431,6 +454,58 @@ LAYOUT_TARGETS = [
   ("trips", "TripsLayoutMici"),
   ("visuals", "VisualsLayoutMici"),
 ]
+
+
+class TestCruiseBadges:
+  """Badges show only where alpha long and ICBM split the cruise features. In any other setup
+  one system carries everything and the panel looks as it did before badges."""
+
+  @pytest.mark.parametrize(("has_long", "has_icbm", "mode", "shown"), [
+    (True, True, 3, True),
+    (True, True, 2, False),  # warn never moves the set speed
+    (True, False, 3, False),
+    (False, True, 3, False),
+  ])
+  def test_speed_limit_badge_only_in_the_split_setup(self, params, has_long, has_icbm, mode, shown):
+    from openpilot.selfdrive.ui.sunnypilot.cruise_badges import icbm_moves_speed_limits
+    assert icbm_moves_speed_limits(has_long, has_icbm, mode) == shown
+
+  def test_badged_toggle_renders(self, params):
+    from openpilot.selfdrive.ui.sunnypilot.mici.widgets.button import BigParamControlSP
+    toggle = BigParamControlSP("decel overshoot", "SmartCruiseDecelOvershoot")
+    font_size = toggle._label._font_size
+    toggle.set_badge("stock acc only")
+    render(toggle)
+    assert toggle._label._font_size == font_size  # the badge never resizes the title
+    toggle.set_badge(None)
+    render(toggle)
+
+  def test_overshoot_shows_off_under_long_but_keeps_its_value(self, params, monkeypatch):
+    from opendbc.car.structs import car
+    from openpilot.cereal import custom
+    from openpilot.selfdrive.ui.sunnypilot.mici.layouts.cruise import CruiseLayoutMici
+    from openpilot.selfdrive.ui.ui_state import ui_state
+
+    params.put("CarParamsPersistent", car.CarParams.new_message(
+      brand="mazda", pcmCruise=True, alphaLongitudinalAvailable=True, openpilotLongitudinalControl=True).to_bytes(), block=True)
+    params.put("CarParamsSPPersistent", custom.CarParamsSP.new_message(
+      intelligentCruiseButtonManagementAvailable=True).to_bytes(), block=True)
+    params.put_bool("AlphaLongitudinalEnabled", True, block=True)
+    params.put_bool("IntelligentCruiseButtonManagement", True, block=True)
+    params.put_bool("SmartCruiseDecelOvershoot", True, block=True)
+    old_cp, old_cp_sp = ui_state.CP, ui_state.CP_SP
+    try:
+      ui_state.update_params()
+      layout = CruiseLayoutMici()
+      render(layout)
+      assert not layout._scc_do_toggle._checked
+      assert not layout._scc_do_toggle.enabled
+      assert layout._scc_do_toggle._badge == "stock acc only"
+      assert params.get_bool("SmartCruiseDecelOvershoot")
+    finally:
+      ui_state.CP, ui_state.CP_SP = old_cp, old_cp_sp
+      params.remove("CarParamsPersistent")
+      params.remove("CarParamsSPPersistent")
 
 
 class TestSubtitleAreaRenders:
@@ -597,12 +672,13 @@ class TestAcceleratorProgressRenders:
 
   def _info(self, stage, frac):
     from openpilot.selfdrive.ui.ui_state import ui_state
-    ui_state.accelerator_progress = {'stage': stage, 'frac': frac, 'msg': ''}
+    saved = ui_state.jetlink
+    ui_state.jetlink = jetlink_status(present=True, progress={'stage': stage, 'frac': frac, 'msg': ''})
     try:
       from openpilot.selfdrive.ui.sunnypilot.mici.layouts.models import _model_info
       return _model_info()
     finally:
-      ui_state.accelerator_progress = None
+      ui_state.jetlink = saved
 
   @pytest.mark.parametrize("stage", STAGES)
   def test_every_stage_gives_a_line(self, params, stage):
@@ -617,13 +693,14 @@ class TestAcceleratorProgressRenders:
     # a join has nothing to measure, and "getting ready" alone does not separate an
     # unplugged Jetson from one six seconds from ready
     from openpilot.selfdrive.ui.ui_state import ui_state
-    ui_state.accelerator_progress = {'stage': 'connect', 'frac': 0.0, 'msg': 'waiting for the jetson'}
+    saved = ui_state.jetlink
+    ui_state.jetlink = jetlink_status(present=True, progress={'stage': 'connect', 'frac': 0.0, 'msg': 'waiting for the accelerator'})
     try:
       from openpilot.selfdrive.ui.sunnypilot.mici.layouts.models import _model_info
       _, _, info = _model_info()
     finally:
-      ui_state.accelerator_progress = None
-    assert 'waiting for the jetson' in info
+      ui_state.jetlink = saved
+    assert 'waiting for the accelerator' in info
     assert '%' not in info
 
   def test_failure_says_so_rather_than_showing_100_percent(self, params):
@@ -636,15 +713,20 @@ class TestAcceleratorProgressRenders:
     from openpilot.selfdrive.ui.sunnypilot.mici.layouts import models as models_layout
     ready = self._info('ready', 1.0)
     from openpilot.selfdrive.ui.ui_state import ui_state
-    ui_state.accelerator_progress = None
-    assert ready == models_layout._model_info()
+    saved = ui_state.jetlink
+    ui_state.jetlink = jetlink_status(present=True)
+    try:
+      assert ready == models_layout._model_info()
+    finally:
+      ui_state.jetlink = saved
 
   @pytest.mark.parametrize("stage", STAGES)
   def test_the_panel_draws_with_progress_set(self, params, stage):
     from openpilot.selfdrive.ui.ui_state import ui_state
     from openpilot.selfdrive.ui.sunnypilot.mici.layouts.models import ModelsLayoutMici
 
-    ui_state.accelerator_progress = {'stage': stage, 'frac': 0.5, 'msg': ''}
+    saved = ui_state.jetlink
+    ui_state.jetlink = jetlink_status(present=True, progress={'stage': stage, 'frac': 0.5, 'msg': ''})
     try:
       layout = ModelsLayoutMici()
       render(layout)
@@ -653,12 +735,13 @@ class TestAcceleratorProgressRenders:
         render(item)
       render(layout.current_model_info)
     finally:
-      ui_state.accelerator_progress = None
+      ui_state.jetlink = saved
 
 
 class TestAcceleratorIconState:
-  """chestnut_state for an off-board accelerator comes from the view and the progress
-  param, not a USB id the comma never enumerates. a fitted chestnut keeps upstream's path"""
+  """chestnut_state for an off-board accelerator comes from jetlink's snapshot and
+  modeld's acceleratorState, not a USB id the comma never enumerates. a fitted
+  chestnut keeps upstream's path"""
 
   class FakeSM:
     def __init__(self, big=False, alive=False, recv=0):
@@ -674,19 +757,19 @@ class TestAcceleratorIconState:
 
   @staticmethod
   def _view(present=True, ready=False, progress=None, state='none'):
-    from openpilot.selfdrive.ui.sunnypilot.ui_state import AcceleratorView
-    return AcceleratorView(present, ready, progress, state)
+    """The link on, and modeld's acceleratorState by name."""
+    return jetlink_status(enabled=True, mode='usb', present=present, ready=ready, progress=progress), state
 
   def _state(self, view, sm=None, started=False):
     from openpilot.selfdrive.ui.ui_state import ui_state
-    saved = ui_state.sm, ui_state.started, ui_state.started_frame, ui_state.accelerator_view
+    saved = ui_state.sm, ui_state.started, ui_state.started_frame, ui_state.jetlink, ui_state._accelerator_state_name
     ui_state.sm, ui_state.started, ui_state.started_frame = sm or self.FakeSM(), started, 0
-    ui_state.accelerator_view = view
+    ui_state.jetlink, ui_state._accelerator_state_name = view
     try:
       ui_state._update_chestnut_state()
       return ui_state.chestnut_state
     finally:
-      ui_state.sm, ui_state.started, ui_state.started_frame, ui_state.accelerator_view = saved
+      ui_state.sm, ui_state.started, ui_state.started_frame, ui_state.jetlink, ui_state._accelerator_state_name = saved
 
   def test_offroad_states(self, params):
     from openpilot.selfdrive.ui.ui_state import ChestnutState
@@ -727,35 +810,35 @@ class TestAcceleratorIconState:
     stack = ExitStack()
     stack.enter_context(mock.patch.object(module, 'read_int', return_value=1))
     stack.enter_context(mock.patch.object(module, 'get_usb_state', return_value=[]))
-    stack.enter_context(mock.patch("openpilot.sunnypilot.accelerators.present", return_value=present))
+    stack.enter_context(mock.patch("openpilot.sunnypilot.jetlink_adapter.status", return_value=jetlink_status(present=present)))
     return stack
 
   def test_a_present_accelerator_is_not_an_unknown_usb_device(self, params):
     import time
     from openpilot.selfdrive.ui.ui_state import ui_state
-    saved = ui_state.usb_connected, ui_state.usb_connected_ts, ui_state.usb_unknown, ui_state.accelerator_view
+    saved = ui_state.usb_connected, ui_state.usb_connected_ts, ui_state.usb_unknown, ui_state.jetlink
     try:
       ui_state.usb_connected, ui_state.usb_connected_ts, ui_state.usb_unknown = True, time.monotonic() - 11.0, False
       with self._usb(present=True):
         ui_state.update_params()  # builds the view
         ui_state.usb_connected_ts = time.monotonic() - 11.0
         ui_state.update_params()  # decides
-      assert ui_state.accelerator_view is not None
+      assert ui_state.jetlink_view is not None
       assert ui_state.usb_unknown is False
       with self._usb(present=False):
         ui_state.update_params()
         ui_state.usb_connected_ts = time.monotonic() - 11.0
         ui_state.update_params()
-      assert ui_state.accelerator_view is None
+      assert ui_state.jetlink_view is None
       assert ui_state.usb_unknown is True
     finally:
-      ui_state.usb_connected, ui_state.usb_connected_ts, ui_state.usb_unknown, ui_state.accelerator_view = saved
+      ui_state.usb_connected, ui_state.usb_connected_ts, ui_state.usb_unknown, ui_state.jetlink = saved
 
   def test_an_accelerator_recognised_after_the_grace_period_clears_unknown(self, params):
     """the Jetson configures the gadget ~25 s after the UI starts, after the one-shot
     usb_unknown decision; presence arriving later must still clear it"""
     from openpilot.selfdrive.ui.ui_state import ui_state
-    saved = ui_state.usb_connected, ui_state.usb_connected_ts, ui_state.usb_unknown, ui_state.accelerator_view
+    saved = ui_state.usb_connected, ui_state.usb_connected_ts, ui_state.usb_unknown, ui_state.jetlink
     try:
       ui_state.usb_connected, ui_state.usb_connected_ts, ui_state.usb_unknown = True, None, True
       with self._usb(present=False):
@@ -765,25 +848,22 @@ class TestAcceleratorIconState:
         ui_state.update_params()
         assert ui_state.usb_unknown is False
     finally:
-      ui_state.usb_connected, ui_state.usb_connected_ts, ui_state.usb_unknown, ui_state.accelerator_view = saved
+      ui_state.usb_connected, ui_state.usb_connected_ts, ui_state.usb_unknown, ui_state.jetlink = saved
 
 
 class TestAcceleratorLinkToggle:
-  """on is the only enable, and the control is hidden on a device it means nothing to"""
+  """off, usb or ios in one param, and the control is hidden on a device it means nothing to"""
 
-  PARAM = "JetlinkEnabled"
+  PARAM = "JetlinkLink"
 
   @staticmethod
-  def _accelerators(present=False, ready=False, reason=None, installed=False):
-    from contextlib import ExitStack
+  def _accelerators(installed=False, **fields):
+    """ui_state's jetlink snapshot for the block: None, no jetlink here, unless
+    it is installed or a field says there is something to show."""
     from unittest import mock
-
-    stack = ExitStack()
-    stack.enter_context(mock.patch("openpilot.sunnypilot.accelerators.installed", return_value=installed))
-    stack.enter_context(mock.patch("openpilot.sunnypilot.accelerators.present", return_value=present))
-    stack.enter_context(mock.patch("openpilot.sunnypilot.accelerators.ready", return_value=ready))
-    stack.enter_context(mock.patch("openpilot.sunnypilot.accelerators.unavailable_reason", return_value=reason))
-    return stack
+    from openpilot.selfdrive.ui.ui_state import ui_state
+    status = jetlink_status(**fields) if installed or any(fields.values()) else None
+    return mock.patch.object(ui_state, "jetlink", status)
 
   def _meaningful(self, **accelerators) -> bool:
     from openpilot.selfdrive.ui.sunnypilot.mici.layouts.models import link_toggle_meaningful
@@ -804,22 +884,16 @@ class TestAcceleratorLinkToggle:
     params.remove(self.PARAM)
     assert self._meaningful(installed=True)
 
-  def test_refresh_says_what_is_on_the_port(self, params):
-    from unittest import mock
+  def test_the_value_line_says_what_each_mode_is_for(self, params):
     from openpilot.selfdrive.ui.sunnypilot.mici.layouts.models import AcceleratorLinkToggle
 
     params.remove(self.PARAM)
-    link = "openpilot.selfdrive.ui.sunnypilot.accelerator_link"
     toggle = AcceleratorLinkToggle()
-    with self._accelerators(installed=True), mock.patch(f"{link}.read", return_value="1"):
+    assert toggle.get_value() == "off"
+    for index, value in enumerate(("off", "usb: mac, linux", "iOS: iPhone, iPad")):
+      params.put(self.PARAM, index, block=True)
       toggle.refresh()
-      assert toggle.get_value() == "a device is on the usb port"
-    with self._accelerators(installed=True, present=True):
-      toggle.refresh()
-      assert toggle.get_value() == "accelerator connected"
-    with self._accelerators(installed=True), mock.patch(f"{link}.read", return_value=None):
-      toggle.refresh()
-      assert toggle.get_value() == ""
+      assert toggle.get_value() == value
 
   def test_shown_when_ready_with_the_hardware_out_of_the_car(self, params):
     # the engine is cached and the link may be on, so modeld will still try it at
@@ -832,36 +906,35 @@ class TestAcceleratorLinkToggle:
     assert self._meaningful(reason="no gadget")
 
   def test_shown_once_the_user_has_turned_it_on(self, params):
-    params.put_bool(self.PARAM, True, block=True)
+    params.put(self.PARAM, 1, block=True)
     assert self._meaningful()
 
   def test_hidden_when_off_with_nothing_attached(self, params):
-    params.put_bool(self.PARAM, False, block=True)
+    params.put(self.PARAM, 0, block=True)
     assert not self._meaningful()
 
   def test_absent_reads_as_off(self, params):
-    from openpilot.selfdrive.ui.sunnypilot.mici.layouts.models import link_enabled
+    from openpilot.selfdrive.ui.sunnypilot.mici.layouts.models import link_mode
 
     params.remove(self.PARAM)
-    assert link_enabled() is False
-    params.put_bool(self.PARAM, True, block=True)
-    assert link_enabled() is True
-    params.put_bool(self.PARAM, False, block=True)
-    assert link_enabled() is False
+    assert link_mode() == "off"
+    for index, mode in enumerate(("off", "usb", "ios")):
+      params.put(self.PARAM, index, block=True)
+      assert link_mode() == mode
 
-  def test_tap_toggles_on_and_off(self, params):
+  def test_tap_cycles_off_usb_ios(self, params):
     from openpilot.selfdrive.ui.sunnypilot.mici.layouts.models import AcceleratorLinkToggle
     from openpilot.system.ui.lib.application import MousePos
 
     params.remove(self.PARAM)
     toggle = AcceleratorLinkToggle()
-    assert not toggle._checked
+    assert toggle._mode == "off"
     # the small model is the model manager's: the toggle never touches the runner cache
-    with mock.patch.object(params, "remove", wraps=params.remove) as remove:
-      toggle._handle_mouse_release(MousePos(0, 0))
-      assert params.get(self.PARAM) is True
-      toggle._handle_mouse_release(MousePos(0, 0))
-      assert params.get(self.PARAM) is False
+    with mock.patch.object(params, "remove", wraps=params.remove) as remove, \
+         mock.patch('openpilot.selfdrive.ui.sunnypilot.mici.layouts.models.ui_state.is_offroad', return_value=True):
+      for index in (1, 2, 0):
+        toggle._handle_mouse_release(MousePos(0, 0))
+        assert params.get(self.PARAM) == index
     assert "ModelRunnerTypeCache" not in {c.args[0] for c in remove.call_args_list}
 
   def test_refresh_follows_the_param(self, params):
@@ -869,22 +942,29 @@ class TestAcceleratorLinkToggle:
 
     params.remove(self.PARAM)
     toggle = AcceleratorLinkToggle()
-    params.put_bool(self.PARAM, True, block=True)
+    params.put(self.PARAM, 2, block=True)
     toggle.refresh()
-    assert toggle._checked
+    assert toggle._mode == "ios"
 
-  def test_link_toggle_cannot_change_runner_after_ignition(self, params):
+  def test_link_toggle_cannot_change_after_ignition(self, params):
     from unittest import mock
     from openpilot.selfdrive.ui.sunnypilot.mici.layouts.models import AcceleratorLinkToggle
+    from openpilot.system.ui.lib.application import MousePos
 
-    params.remove(self.PARAM)
+    params.put(self.PARAM, 2, block=True)
     toggle = AcceleratorLinkToggle()
-    with mock.patch('openpilot.selfdrive.ui.sunnypilot.mici.layouts.models.ui_state.is_offroad', return_value=False), \
-         mock.patch('openpilot.selfdrive.ui.sunnypilot.mici.layouts.models.set_link_enabled') as write:
-      toggle._store(True)
-      write.assert_not_called()
-    assert params.get(self.PARAM) is None
-    assert not toggle._checked, "the pill must not show a state the param does not have"
+    with mock.patch('openpilot.selfdrive.ui.sunnypilot.mici.layouts.models.ui_state.is_offroad', return_value=False):
+      # drawn disabled, as the model buttons beside it are onroad: a refused
+      # tap used to animate with nothing changing
+      assert not toggle.enabled
+      render(toggle)
+      toggle._handle_mouse_release(MousePos(0, 0))
+      assert params.get(self.PARAM) == 2
+      assert toggle._mode == "ios", "the pills must not show a mode the param does not have"
+    with mock.patch('openpilot.selfdrive.ui.sunnypilot.mici.layouts.models.ui_state.is_offroad', return_value=True):
+      assert toggle.enabled
+      toggle._handle_mouse_release(MousePos(0, 0))
+      assert params.get(self.PARAM) == 0
 
   def test_layout_hides_the_toggle_until_it_means_something(self, params):
     from openpilot.selfdrive.ui.sunnypilot.mici.layouts.models import ModelsLayoutMici
@@ -900,6 +980,69 @@ class TestAcceleratorLinkToggle:
       render(layout)
       render(layout)
       render(layout.link_toggle)
+
+  def test_refresh_spins_beside_the_toggle_until_both_catalogs_are_stamped(self, params):
+    # sunnypilot's refresh, as upstream: the model manager restamps each catalog it
+    # refetches, the big-model one extended for the accelerator or not
+    import time
+    from openpilot.selfdrive.ui.sunnypilot.mici.layouts.models import ModelsLayoutMici
+    from openpilot.selfdrive.ui.sunnypilot.model_info import MODEL_SYNC_KEYS
+
+    params.put(self.PARAM, 1, block=True)
+    for key in MODEL_SYNC_KEYS:
+      params.put(key, 1, block=True)
+    with self._accelerators(present=True), \
+         mock.patch('openpilot.selfdrive.ui.sunnypilot.mici.layouts.models.ui_state.is_offroad', return_value=True):
+      layout = ModelsLayoutMici()
+      button = layout.refresh_btn
+
+      def shown():
+        render(layout)
+        return button.get_value(), button.enabled
+
+      assert layout.link_toggle.is_visible and button in layout._scroller.items
+      assert shown() == ("", True)
+      layout._refresh_models()
+      deadline = time.monotonic() + 2.0
+      while any(params.get(key) for key in MODEL_SYNC_KEYS):
+        assert time.monotonic() < deadline, "the refresh never zeroed the sync keys"
+        time.sleep(0.005)
+      assert shown() == ("fetching...", False)
+      params.put(MODEL_SYNC_KEYS[0], 2, block=True)
+      assert shown() == ("fetching...", False)
+      params.put(MODEL_SYNC_KEYS[1], 2, block=True)
+      assert shown() == ("", True)
+
+
+class TestDefaultBigModelMici:
+  """The big-models button names whose default an empty slot runs: the chestnut's
+  model in the tree when a board is fitted, else the accelerator's."""
+
+  def _big_models_value(self, monkeypatch, board):
+    from openpilot.selfdrive.ui.sunnypilot.mici.layouts.models import ModelsLayoutMici
+    from openpilot.selfdrive.ui.ui_state import ui_state
+    from openpilot.system.ui.lib.application import gui_app
+
+    pushed = []
+    monkeypatch.setattr(gui_app, "push_widget", lambda w: pushed.append(w))
+    monkeypatch.setattr(ui_state, "chestnut_present", board)
+    with mock.patch.object(ui_state, "jetlink", jetlink_status(present=True, default_model="Cinque Terre V3 Model")):
+      layout = ModelsLayoutMici()
+      render(layout)
+      layout._show_folders()
+      buttons = pushed[-1]._scroller.items
+      for button in buttons:
+        render(button)
+    return buttons[1].get_value().removesuffix(" (active)")
+
+  def test_a_fitted_chestnut_names_the_in_tree_model(self, params, monkeypatch):
+    from openpilot.sunnypilot.models.model_name import DEFAULT_BIG_MODEL
+    params.remove("ModelManager_ActiveBundleChestnut")
+    assert self._big_models_value(monkeypatch, True) == f"{DEFAULT_BIG_MODEL} (Default)".lower()
+
+  def test_without_a_chestnut_the_accelerator_names_its_default(self, params, monkeypatch):
+    params.remove("ModelManager_ActiveBundleChestnut")
+    assert self._big_models_value(monkeypatch, False) == "cinque terre v3 model (default)"
 
 
 class TestAlphaLongSwitchMici:

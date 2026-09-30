@@ -1,13 +1,40 @@
-zoompilot v2026.09.11-15
+zoompilot vUNRELEASED
 ========================
-* Option to select different tune versions for small and big models. small defaults to v2 and big defaults to v1
+**jetlink support!**
+* Run big models on a Mac, Jetson, NVIDIA Linux PC or iPhone <3
+* Turn on: Settings > Models > Accelerator Link.
 
-zoompilot v2026.09.10-14
+**General Updates & Fixes**
+* **Lane Keep Off:** Dash/infotainment buttons now disable steering but retain cruise control, adding a "Lateral Disabled, LKAS is off" alert.
+* **False Alerts:** Fixed "Steering Assist Temporarily Unavailable" showing when lane-keep is off.
+* **Export Mazdas:** Added fingerprinting for CX-5 and CX-9 (JM7 VINs).
+* **NZ & AUS:** zoompilot set speeds now match the dash and speed limit displays.
+* **Sunnylink:** Fixed backup/restore reading garbage setting names.
+* **Upstream sunnypilot:** Added refresh/clear-cache buttons, fixed Models UI freezing, and fixed camera offset.
+
+**TJA Button Mazdas**
+* Fixed steering deactivating after a TJA press.
+* Pressing TJA no longer leaves MRCC armed.
+* Added a white steering wheel cluster icon when zoompilot steers with cruise off.
+* Restored chimes for cruise engage/disengage, and when turning on TJA steering during cruise.
+
+**Alpha Longitudinal Only**
+* **ICBM & Speed Limit Assist:** When ICBM is on, the limit is applied by changing the cruise set speed. When ICBM is off, you're prompted to set 80 mph and the limit is handled internally.
+* **Auto High Beams:** Restored functionality.
+* **Distance Controls:** Both follow distance buttons now work for driving personality (closer = aggressive, farther = relaxed).
+
+zoompilot v2026.09.12-14
 ========================
-Jetlink: models build while you drive, a lighter footprint, and a link that stays up
-* Large models build onroad. A model that is not built yet no longer waits for a parked car. The small model drives, the Jetson builds, the panel counts it down, and the large model joins at the first stop with cruise off. For anyone whose Jetson only powers up with the ignition, this is the difference between building and never building.
-* Jetlink costs the comma less. The process that holds the USB link is about 10 MB and almost no CPU while driving. Everything heavy, the download, the upload and the TensorRT build, now runs only while it is working and exits when it is done.
-* The link stays up across engage, disengage and the offroad and onroad edges. The comma holds one connection to the Jetson for as long as the link is enabled instead of dropping and reopening it at every transition, so the icon no longer blinks and the large model no longer has to rejoin mid-drive.
+* adjustments to address LKAS errors.
+* On cars with TJA/CTS, zoompilot now switches off TJA fully so it doesn't take over when you disengage zoompilot. This also addresses related "Front Camera System Malfunction" errors.
+* Added 2023 CX-8 support and 2012-16 CX-5 alpha longitudinal support with a compatible steering rack swap. Older Mazdas now appear in the car picker.
+* You can now change the "TJA button" setting through sunnylink.
+* Alpha longitudinal only
+  * Fixes for not being able to engage after a restart or force offroad.
+  * Change the alpha longitudinal toggle to offroad only to avoid cruise lockouts and dash errors.
+  * A new startup alert tells you when alpha longitudinal is ready.
+  * If you pull away before setup finishes, it will try to enable again at the next stop.
+  * Added support for older G46L radars with a compatible steering rack swap. Lead detection uses the camera.
 
 zoompilot v2026.09.07-13
 ========================

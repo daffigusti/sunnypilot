@@ -16,6 +16,7 @@ TORQUE_VERSIONS_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), 
 
 # one tune per model size, keyed by modelV2.big
 TUNE_PARAM_BY_SIZE = {False: "TorqueControlTune", True: "TorqueControlTuneBig"}
+V2 = 2.0
 
 
 def load_versions() -> dict:
@@ -48,7 +49,7 @@ def label_for(version: float, versions: dict[str, float]) -> str | None:
 
 
 def stored_tune_versions(params) -> dict[bool, float]:
-  """What the selectors store per size, unset resolved through the declared defaults (v2
+  """What the selectors store per size, unset resolved through the declared defaults (v0
   small, v1 big): a bare params.get() returns None for an unset param, and float(None) raises."""
   return {big: float(params.get(key, return_default=True)) for big, key in TUNE_PARAM_BY_SIZE.items()}
 
@@ -61,3 +62,9 @@ def resolved_tune_versions(params, torque_lateral_tuning: bool = True) -> dict[b
   if not params.get_bool("EnforceTorqueControl"):
     return dict.fromkeys(TUNE_PARAM_BY_SIZE, 0.0 if torque_lateral_tuning else None)
   return stored_tune_versions(params)
+
+
+def jerk_aware_has_effect(params) -> bool:
+  """v2 replaces the jerk-aware mechanisms and forces that controller off, so the toggle
+  only does something while some model size runs another tune."""
+  return any(version != V2 for version in resolved_tune_versions(params).values())

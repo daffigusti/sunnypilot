@@ -8,9 +8,9 @@ import openpilot.cereal.messaging as messaging
 from openpilot.cereal import log, custom
 from opendbc.car.structs import car
 from openpilot.common.constants import CV
-from openpilot.common.realtime import DT_CTRL
 from openpilot.sunnypilot.selfdrive.selfdrived.events_base import EventsBase, Priority, ET, Alert, \
-  NoEntryAlert, ImmediateDisableAlert, SoftDisableAlert, EngagementAlert, NormalPermanentAlert, AlertCallbackType, wrong_car_mode_alert
+  NoEntryAlert, ImmediateDisableAlert, EngagementAlert, NormalPermanentAlert, AlertCallbackType, EmptyAlert, \
+  wrong_car_mode_alert
 from openpilot.sunnypilot.selfdrive.controls.lib.speed_limit import PCM_LONG_REQUIRED_MAX_SET_SPEED, CONFIRM_SPEED_THRESHOLD
 from openpilot.common.hardware import HARDWARE
 from opendbc.sunnypilot.car.stock_ecu import StockEcuState
@@ -21,20 +21,13 @@ VisualAlert = car.CarControl.HUDControl.VisualAlert
 AudibleAlert = car.CarControl.HUDControl.AudibleAlert
 AudibleAlertSP = custom.SelfdriveStateSP.AudibleAlert
 EventNameSP = custom.OnroadEventSP.EventName
+AssistState = custom.LongitudinalPlanSP.SpeedLimit.AssistState
 
 
 # get event name from enum
 EVENT_NAME_SP = {v: k for k, v in EventNameSP.schema.enumerants.items()}
 
 IS_MICI = HARDWARE.get_device_type() == 'mici'
-
-
-def soft_disable_alert(alert_text_2: str) -> AlertCallbackType:
-  def func(CP: car.CarParams, CS: car.CarState, sm: messaging.SubMaster, metric: bool, soft_disable_time: int, personality) -> Alert:
-    if soft_disable_time < int(0.5 / DT_CTRL):
-      return ImmediateDisableAlert(alert_text_2)
-    return SoftDisableAlert(alert_text_2)
-  return func
 
 
 # What the driver has to do, per stock ECU state that does not engage normally, in the shape of
@@ -47,6 +40,15 @@ STOCK_ECU_ALERT_TEXT = {
   StockEcuState.RESTORING: ("Longitudinal Handing Back", "Stock cruise returns when it completes"),
   StockEcuState.FAILED: ("Longitudinal Initializing Failed", "Restart the car to retry"),
 }
+
+
+def big_model_ready_alert(CP: car.CarParams, CS: car.CarState, sm: messaging.SubMaster, metric: bool, soft_disable_time: int, personality) -> Alert:
+  # an accelerator's comes a second after its swap, when the driver can engage;
+  # its offer to switch is the one titled "Big Model Ready"
+  accelerator = sm['modelDataV2SP'].acceleratorState != custom.ModelDataV2SP.AcceleratorState.none
+  return Alert("Big Model Active" if accelerator else "Big Model Ready", "",
+               AlertStatus.normal, AlertSize.small,
+               Priority.LOW, VisualAlert.none, AudibleAlert.prompt, 2.)
 
 
 def stock_ecu_not_ready_alert(CP: car.CarParams, CS: car.CarState, sm: messaging.SubMaster, metric: bool, soft_disable_time: int, personality) -> Alert:
@@ -80,8 +82,12 @@ def speed_limit_pre_active_alert(CP: car.CarParams, CS: car.CarState, sm: messag
   alert_1_str = ""
   alert_size = AlertSize.small
 
-  if CP.openpilotLongitudinalControl and CP.pcmCruise:
-    # PCM long
+  # the arbiter publishes its session only where it owns SLA (never disabled while long is
+  # enabled past its guard); the planner machine never publishes it. One hop old, so key on
+  # the session existing rather than on its exact state.
+  arbiter_owns = sm['carStateSP'].zoompilot.cruiseSession.state != AssistState.disabled
+  if CP.openpilotLongitudinalControl and CP.pcmCruise and not arbiter_owns:
+    # PCM long: the driver moves the cluster to the required max
     cst_low, cst_high = PCM_LONG_REQUIRED_MAX_SET_SPEED[metric]
     pcm_long_required_max = cst_low if speed_limit_final_last_conv < CONFIRM_SPEED_THRESHOLD[metric] else cst_high
     pcm_long_required_max_set_speed_conv = round(pcm_long_required_max * speed_conv)
@@ -137,12 +143,35 @@ EVENTS_SP: dict[int, dict[str, Alert | AlertCallbackType]] = {
       Priority.LOW, VisualAlert.none, AudibleAlert.disengage, 1.),
   },
 
+  EventNameSP.stockLkasOff: {
+    # Mazda: invalidLkasSetting is swapped for this when MADS is on (CarSpecificEventsSP).
+    # No alert of its own: the button press on the same frame already speaks; the no-entry
+    # is for later enable attempts with LKA still off.
+    ET.USER_DISABLE: EmptyAlert,
+    ET.NO_ENTRY: Alert(
+      "Lateral Disabled",
+      "LKAS is off",
+      AlertStatus.normal, AlertSize.mid,
+      Priority.LOW, VisualAlert.none, AudibleAlert.refuse, 3.),
+  },
+
   EventNameSP.manualLongitudinalRequired: {
     ET.WARNING: Alert(
       "Smart/Adaptive Cruise Control: OFF",
       "Manual Speed Control Required",
       AlertStatus.normal, AlertSize.mid,
       Priority.LOW, VisualAlert.none, AudibleAlert.none, 1.),
+  },
+
+  # Sound-only mirrors of the longitudinal selfdrive transitions while a declared MADS
+  # button owns lateral. PERMANENT carries no state-machine meaning, so the chime cannot
+  # enable or disable anything.
+  EventNameSP.longitudinalEnableChime: {
+    ET.PERMANENT: EngagementAlert(AudibleAlert.engage),
+  },
+
+  EventNameSP.longitudinalDisableChime: {
+    ET.PERMANENT: EngagementAlert(AudibleAlert.disengage),
   },
 
   EventNameSP.silentLkasEnable: {
@@ -233,17 +262,6 @@ EVENTS_SP: dict[int, dict[str, Alert | AlertCallbackType]] = {
       Priority.LOW, VisualAlert.steerRequired, AudibleAlert.prompt, .5),
   },
 
-  # The stock camera's TJA/CTS stayed armed through openpilot's presses on the camera bus. The
-  # panda drops its 0x243 and the EPS follows ours, so the camera never sees its command
-  # executed. One press of the TJA button turns the stock system off; openpilot keeps steering.
-  EventNameSP.mazdaStockCtsActive: {
-    ET.WARNING: Alert(
-      "Stock CTS Is Still On",
-      "Press the TJA button to switch it off",
-      AlertStatus.userPrompt, AlertSize.mid,
-      Priority.LOW, VisualAlert.none, AudibleAlert.prompt, 4.),
-  },
-
   # The three stock ECU alerts are PERMANENT, not the *AlertOnly WARNING convention: WARNING
   # shows only while cruise or MADS lateral is active, and these must reach a driver whose
   # lateral is off or paused (brake held at the stop where the takeover happens; route
@@ -327,27 +345,29 @@ EVENTS_SP: dict[int, dict[str, Alert | AlertCallbackType]] = {
       Priority.LOW, VisualAlert.none, AudibleAlert.prompt, 0.1),
   },
 
-  # what the window actually is, since "disengage" is not it on a MADS car:
-  # latActive is true whenever the car is moving with lateral on
+  # an accelerator ready while something is in control: it swaps in only when
+  # nothing is, so the next engagement after a full disengage drives it. Raised
+  # for 3 s (accelerator_events), and no longer than the wait for the swap
   EventNameSP.bigModelAvailable: {
     ET.PERMANENT: Alert(
-      "Model Available" if IS_MICI else "Big Model Available",
-      "Stop with cruise off,\nor turn lateral off",
+      "Big Model Ready",
+      "Re-engage to switch",
       AlertStatus.normal, AlertSize.mid,
-      Priority.LOW, VisualAlert.none, AudibleAlert.prompt, 3.),
+      Priority.LOW, VisualAlert.none, AudibleAlert.prompt, .2),
   },
 
   EventNameSP.bigModelReady: {
-    ET.PERMANENT: Alert(
-      "Big Model Ready",
-      "",
-      AlertStatus.normal, AlertSize.small,
-      Priority.LOW, VisualAlert.none, AudibleAlert.prompt, 2.),
+    ET.PERMANENT: big_model_ready_alert,
   },
 
-  # an accelerator on its own power reconnects mid-drive, so no "restart the car"
+  # an accelerator lost or too slow while engaged: the small model drives on
+  # from a reset history and nothing disengages, so the warning is as loud as a
+  # soft disable. Raised for 5 s (accelerator_events); a disengage ends it
   EventNameSP.bigModelLinkLost: {
-    ET.SOFT_DISABLE: soft_disable_alert("Big Model Lost"),
-    ET.PERMANENT: NormalPermanentAlert("Big Model Lost", "Small model is driving,\nreconnecting if it comes back", duration=20.),
+    ET.WARNING: Alert(
+      "TAKE CONTROL",
+      "Big model lost, small model driving",
+      AlertStatus.userPrompt, AlertSize.mid,
+      Priority.MID, VisualAlert.steerRequired, AudibleAlert.warningSoft, .2),
   },
 }

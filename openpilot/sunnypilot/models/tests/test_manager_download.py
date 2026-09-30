@@ -13,6 +13,7 @@ import tempfile
 import threading
 import time
 import unittest
+from contextlib import contextmanager
 from typing import Any
 from unittest import mock
 
@@ -29,6 +30,20 @@ from openpilot.sunnypilot.models import helpers
 from openpilot.sunnypilot.models.helpers import (ACTIVE_BUNDLE_KEYS, get_active_bundle, get_active_source, get_selected_bundle,
                                                   resolve_bundle_by_ref, validate_active_bundles)
 from openpilot.sunnypilot.models.manager import ModelManagerSP
+
+# the model manager's catalog as fetched, never the one an installed jetlink extends
+# with newer catalogs (jetlink_adapter.extend_catalog): that depends on the checkout and
+# reaches the network
+_catalog_as_fetched = mock.patch("openpilot.sunnypilot.jetlink_adapter.should_extend_catalog", return_value=False)
+
+
+def setUpModule():
+  _catalog_as_fetched.start()
+
+
+def tearDownModule():
+  _catalog_as_fetched.stop()
+
 
 CHUNK_BODIES = [b'A' * 5000, b'B' * 5000, b'C' * 3000]
 WHOLE_BODY = b'Z' * 9000
@@ -788,10 +803,19 @@ class TestBigModelSlotWithoutChestnut(ManagerDownloadTestBase):
 
 
 
+@contextmanager
 def _jetlink_params(values: dict):
-  """The jetlink param store as the models package would read it."""
-  from openpilot.sunnypilot.accelerators.jetlink import helpers as jetlink_helpers
-  return mock.patch.object(jetlink_helpers, "_get", side_effect=lambda key, default=None: values.get(key, default))
+  """jetlink's params as the panels write them, in this test's own store:
+  jetlink reads them there, through the adapter and off their files."""
+  from openpilot.common.params import Params
+  params = Params()
+  for key, value in values.items():
+    params.put(key, value, block=True)
+  try:
+    yield
+  finally:
+    for key in values:
+      params.remove(key)
 
 
 class TestActiveBundleSelection(OpenpilotTestCase):
@@ -830,7 +854,7 @@ class TestActiveBundleSelection(OpenpilotTestCase):
     raw = self._raw_bundle('small')
     raw['runner'] = int(custom.ModelManagerSP.Runner.tinygrad)
     params = self._params(qcom=raw, chestnut=self._raw_bundle('big'))
-    with _jetlink_params({'JetlinkEnabled': True}), \
+    with _jetlink_params({'JetlinkLink': 1}), \
          mock.patch('openpilot.sunnypilot.models.helpers.chestnut_present', return_value=False):
       assert get_active_bundle(params).ref == 'small'
       assert helpers.get_active_model_runner(params, force_check=True) == custom.ModelManagerSP.Runner.tinygrad
@@ -951,7 +975,7 @@ class TestSmallSlotUnderTheLink(OpenpilotTestCase):
 
   def test_the_stored_bundle_reads_the_same_whatever_the_link_says(self):
     params = self._params(self._raw_bundle("custom_small"))
-    for values in ({"JetlinkEnabled": True}, {}):
+    for values in ({"JetlinkLink": 1}, {}):
       with _jetlink_params(values), mock.patch("openpilot.sunnypilot.models.helpers.chestnut_present", return_value=False):
         assert get_selected_bundle(params, "qcom").ref == "custom_small"
         assert get_active_bundle(params).ref == "custom_small"

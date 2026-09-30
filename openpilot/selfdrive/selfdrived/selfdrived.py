@@ -157,7 +157,7 @@ class SelfdriveD(CruiseHelper):
     self.state_machine = StateMachine()
     self.rk = Ratekeeper(100, print_delay_threshold=None)
 
-    self.ignored_processes = {'mapd', }
+    self.ignored_processes = {'mapd', *AcceleratorEvents.OPTIONAL_PROCESSES}
 
     # Determine startup event
     is_remote = build_metadata.openpilot.comma_remote or build_metadata.openpilot.sunnypilot_remote
@@ -224,7 +224,7 @@ class SelfdriveD(CruiseHelper):
       self.big_model_active = True
     if not self.enabled and not model_unavailable:
       self.big_model_active = False
-    self.accelerator_events.update(self.sm, self.enabled, CS.standstill, self.events, self.events_sp)
+    self.accelerator_events.update(self.sm, self.enabled or self.mads.enabled, self.events, self.events_sp)
 
     if self.sm.recv_frame['lateralManeuverPlan'] > 0:
       self.events.add(EventName.lateralManeuver)
@@ -287,7 +287,7 @@ class SelfdriveD(CruiseHelper):
       car_events = self.car_events.update(CS, self.CS_prev, self.sm['carControl']).to_msg()
       self.events.add_from_msg(car_events)
 
-      car_events_sp = self.car_events_sp.update(CS, self.events, self.sm['carStateSP']).to_msg()
+      car_events_sp = self.car_events_sp.update(CS, self.events, self.sm['carStateSP'], self.mads.enabled_toggle).to_msg()
       self.events_sp.add_from_msg(car_events_sp)
 
       if self.CP.notCar:
@@ -534,6 +534,11 @@ class SelfdriveD(CruiseHelper):
           self.params.put('LongitudinalPersonality', self.personality)
           self.events.add(EventName.personalityChanged)
         self.experimental_mode_switched = False
+      elif self.distance_farther_released(self.sm['carStateSP']):
+        # the wheel's second distance button steps the other way (sunnypilot CruiseHelper)
+        self.personality = (self.personality + 1) % 3
+        self.params.put('LongitudinalPersonality', self.personality)
+        self.events.add(EventName.personalityChanged)
 
     self.icbm.run(CS, self.sm['carControl'], self.sm['longitudinalPlanSP'], self.is_metric)
 

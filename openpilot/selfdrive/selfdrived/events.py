@@ -235,9 +235,7 @@ EVENTS: dict[int, dict[str, Alert | AlertCallbackType]] = {
 
   EventName.bigModelFailed: {
     ET.SOFT_DISABLE: soft_disable_alert("Big Model Failed"),
-    # no "restart the car to retry": an accelerator on its own power reconnects
-    # mid-drive, and this fires beside bigModelLinkLost, which says so
-    ET.PERMANENT: NormalPermanentAlert("Big Model Failed ", "Small model is still available", duration=20.),
+    ET.PERMANENT: NormalPermanentAlert("Big Model Failed ", "Restart the car to retry,\nsmall model is still available", duration=20.),
   },
 
   EventName.lateralManeuver: {
