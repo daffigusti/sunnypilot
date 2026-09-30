@@ -1,34 +1,50 @@
 # Jetlink di Chery Omoda E5: runbook
 
-Catatan hasil pengujian 22 dan 23 September 2026. Comma 3X (tizi), MacBook
-Pro 16 inci M3 Max, branch `feature/chery-jetlink`, model besar default
-(BMRLNAP v4) dan Cinque Terre V3.
+Catatan hasil pengujian 22, 23, dan 30 September 2026. Comma 3X (tizi), MacBook
+Pro 16 inci M3 Max, branch `chery-jetlink-v072` (jetlink v0.7.2, server Swift),
+model besar Cinque Terre V3.
 
 ## Urutan pakai di mobil
 
 1. Harness ke comma. Biarkan comma boot penuh sampai UI muncul.
 2. Mac di charger mobil USB-C PD, minimal 65 W. High Power Mode on
    (System Settings > Battery > Energy Mode, untuk power adapter dan battery).
-3. Buka Jetlink.app. Penjaga clock GPU (Metal keep-alive upstream) hidup
-   sendiri saat frame masuk, tidak ada baris log khusus. Tutup browser,
-   Termius, dan aplikasi Electron lain. Terminal.app boleh.
-4. Baru colok kabel USB-C ke C dari comma ke port Mac yang sudah teruji.
-   Pakai kabel dan port yang sama terus.
-5. Ignition on. Settings > Models harus menampilkan nama model besar dan status
-   jalan. Indikator GPU di home hijau.
+3. Buka Jetlink.app. Settings > Backend: **CoreML on the GPU**, bukan Neural
+   Engine (lihat Gejala). Tutup browser, Termius, dan aplikasi Electron lain.
+4. Colok kabel USB-C ke C dari comma ke port Mac yang sudah teruji. Pakai kabel
+   dan port yang sama terus. C-to-C memberi USB 3; A-to-C yang dicoba hanya USB 2.
+5. Ignition on. Settings > Models > Accelerator Link harus **USB**, model besar
+   Cinque Terre V3. Jetlink.app > Status: Comma connected, Connected over USB 3.
 
-Kenapa urutannya begitu: dengan kabel Mac tercolok sejak boot, comma tiga kali
-reboot saat model besar join. PMIC mencatat UVLO (tegangan drop). Dengan kabel
-dicolok setelah boot, tegangan `usb` stabil 5.2 sampai 5.4 V.
+Batas arus USB 500 mA (lihat bawah) dipasang owner jetlink sekitar 40 detik
+setelah comma boot. Boot dengan kabel tercolok sudah lolos, tapi kalau comma
+mati saat boot, colok kabel Mac setelah UI muncul.
+
+## Batas arus USB 500 mA
+
+Lewat kabel C-to-C, Mac menawarkan 3 A lewat PD, dan charger comma lalu
+mengambil hampir semua dayanya dari Mac, bukan dari harness: arus harness turun
+dari 1.3 A ke sekitar 0.05 A, VBUS turun ke 4.6 V, dan PMIC mematikan comma
+(`Power-off reason: Triggered from UVLO`) 25 sampai 84 detik setelah model
+besar join, berulang selama kabel tercolok. Tegangan 12 V mobil tetap 12.9
+sampai 13.7 V, jadi aki dan harness tidak bermasalah.
+
+Obatnya jetlink `0e3b0ef`: `jetlink-root.sh vm apply` memaksa voter `USB_ICL`
+charger ke 500 mA selama Accelerator Link aktif, `vm restore` melepasnya saat
+link dimatikan, reboot mengembalikan nilai PD sampai owner memasangnya lagi.
+Link tetap super-speed, harness yang menyuplai comma. Kabel A-to-C dari port
+USB-A hanya menawarkan maksimal 900 mA, karena itu upstream tidak kena.
 
 ## Cek cepat
 
 Di comma (ssh):
 
 ```bash
-cat /sys/class/udc/a600000.dwc3/current_speed   # harus super-speed
-free -m | head -2                               # pemakaian di bawah 90%
-pgrep -fc multiprocessing.spawn                 # 1 (hanya ssh ini), bukan 9
+cat /sys/class/udc/a600000.dwc3/current_speed                         # harus super-speed
+sudo cat /sys/kernel/debug/pmic-votable/USB_ICL/status | grep effective # harus v=500000
+cat /sys/class/power_supply/battery/current_now                       # arus harness, ratusan ribu uA ke atas
+free -m | head -2                                                     # pemakaian di bawah 90%
+tail -20 /data/log/jetlink-owner.log
 ```
 
 Di Mac:
@@ -38,36 +54,33 @@ tail -f ~/Library/Logs/Jetlink/server.log        # slow frame harus jarang
 grep -c "slow frame" ~/Library/Logs/Jetlink/server.log
 ```
 
-Jetlink.app > Status: fps 20, frame time sekitar 23 ms, slow 0.
+Jetlink.app > Status: rate 20 per detik, frame sekitar 20 ms di GPU, slow 0.
 
 ## Angka acuan
 
 | kondisi | p50 | p99 | lewat 50 ms |
 | --- | ---: | ---: | ---: |
-| awal, tanpa apa-apa | 74 ms | 105 ms | 42% |
-| keeper GPU + AC + High Power, loopback | 18 ms | 22 ms | 0% |
-| keep-alive upstream + AC + High Power, loopback | 19 ms | 21 ms | 0% |
-| dengan comma, USB 3, di meja | 27 ms | 32 ms | 0.05% |
-| di mobil, 30 menit, sisi Mac | 23 ms | 23 ms | 0 |
+| v0.7.2 bench, Neural Engine | 23.9 ms | 28.8 ms | 1/1201 (pemanasan) |
+| v0.7.2 bench, CoreML GPU | 19.0 ms | 24.9 ms | 1/1201 |
+| v0.7.2 client Python ke server Swift, TCP lokal | 24.3 ms | 27.9 ms | 0/1190 |
+| v0.7.2 di mobil diam, Neural Engine, dengan comma | 24.8 ms | 25.8 ms | 3 menit bersih, lalu 14 slow dalam 5 menit |
+| v0.7.2 di mobil diam, CoreML GPU, dengan comma | ~20 ms | - | 3 slow dan 1 lepas dalam 7 menit |
 
-Penyebab angka awal: governor macOS menurunkan clock GPU dari 1345 ke 340 MHz
-setelah 20 detik beban 40% duty. Penjaganya sekarang Metal keep-alive dari
-upstream jetlink (commit `194ff6d`, otomatis untuk CoreML GPU, matikan dengan
-`JETLINK_METAL_KEEPALIVE=0`); keeper tinygrad buatan sendiri sudah dibuang.
-Di baterai tetap 8.8% lewat budget, jadi charger wajib.
+Protocol v0.7 mengirim 393 KB per frame ke Mac dan menerima 8 KB. Lewat USB 2
+itu sekitar 10 ms per frame, lewat USB 3 1 sampai 2 ms.
 
 ## Gejala dan obatnya
 
 | gejala | sebab | obat |
 | --- | --- | --- |
-| `current_speed = high-speed`, `send 12 ms` per frame | kabel atau port USB 2 | ganti kabel USB 3 atau port Mac lain, cek lagi |
-| join macet di `joining`, modeld tulis `no reader for 15 s` | sesi hantu di server (sudah dipatch di build sendiri) | Restart server di Jetlink.app |
-| slow frame melonjak, gpu 60 sampai 110 ms, link tidak putus | aplikasi lain rebutan GPU Mac | tutup Chrome, Termius, tab Logs |
-| alert Low Memory | pemakaian comma di atas 90% | sudah turun ke 87% setelah pool tinygrad dimatikan; matikan `OsmLocal` kalau peta offline tidak dipakai |
-| comma reboot saat model besar join | tegangan drop (UVLO) | colok kabel Mac setelah comma boot |
-| "waiting for comma" saat parkir, kabel tercolok, Mac tidak melihat device USB apa pun | comma melepas gadget 60 s setelah idle karena mengira Mac ikut tidur (sudah difix, `97805f474`) | kalau muncul lagi: cek `/data/jetlink-owner-state`, harus `sleep_after: 0.0` |
-| ikon GPU tetap hijau setelah kabel dicabut di ujung Mac | comma 3X tidak melihat disconnect, UDC tetap `configured` sampai colokan berikutnya (UI sudah membaca iklan arus Type-C, `b92380e07`) | colok ulang cukup, tidak perlu toggle |
-| ganti model besar tidak berpengaruh, log `no catalog model for ...` | katalog chestnut v27 bertanda selector 20 dan dulu dibuang semua (sudah difix, `d86a25232`) | pilih ulang model sekali setelah update |
+| comma reboot 25 sampai 84 detik setelah model besar join, `dmesg` menulis UVLO | comma menarik daya dari Mac lewat PD 3 A | pastikan `USB_ICL` 500 mA aktif (Cek cepat); kalau tidak, cek jetlink `0e3b0ef` ada di comma |
+| link putus-sambung tiap 20 sampai 40 detik, `hello from modeld` baru tiap kali, slow frame gpu 60 sampai 210 ms | frame Mac di atas 100 ms, atau dua di atas 75 ms dalam 10 detik: comma melepas model besar ke model kecil (v0.7.1) dan join lagi. Neural Engine dipakai bersama fitur macOS | backend CoreML on the GPU; tutup Chrome dan app berat |
+| TAKE CONTROL 5 detik saat engaged, lalu tetap nyetir | model besar dilepas, seperti baris di atas | sama; engage ulang untuk kembali ke model besar |
+| log Mac: `peer speaks protocol v3, we speak v2` | app Jetlink lama (v0.3) yang jalan | buka `/Applications/Jetlink.app` (v0.7.2) |
+| log Mac: `the comma's gadget is on the bus, but nothing on the comma is serving it yet` | mobil offroad, provisioning tidak ada kerjaan | normal; frame baru mengalir saat ignition on |
+| `current_speed = high-speed`, send sekitar 10 ms per frame | kabel atau port USB 2 | kabel C-to-C USB 3, atau port Mac lain |
+| alert Low Memory | pemakaian comma di atas 90% (30 Sep: 83% onroad) | matikan `OsmLocal` kalau peta offline tidak dipakai |
+| mobil mepet satu sisi lajur | kalibrasi lama | reset kalibrasi (sudah menyelesaikan kasus 30 Sep) |
 | link putus saat lid ditutup atau Mac di baterai | clamshell sleep atau idle sleep macOS | charger tetap tercolok; lid tertutup butuh `sudo pmset -a disablesleep 1` |
 | Mac hanya melihat `panda` (3801:ddcc), bukan `jetlink` (1209:0001) | kabel masuk jalur panda, bukan port data comma | pindah ke port yang benar |
 
@@ -80,10 +93,10 @@ Di comma:
 ```bash
 cat /sys/class/udc/*/state                       # configured / not attached / default
 cat /sys/class/power_supply/usb/typec_mode       # Mac tercolok: "high current"
-cat /data/jetlink-owner-state                    # sleep_after harus 0.0
+cat /data/jetlink-server.json                    # hello server terakhir, sleep_after harus 0.0
 ls /dev/shm/jetlink-dormant 2>/dev/null          # ada = owner sengaja melepas gadget
 tail -20 /data/log/jetlink-owner.log
-dmesg | grep -E "usbpd|USB_STATE|configfs" | tail
+dmesg | grep -E "usbpd|USB_STATE|configfs|UVLO" | tail
 ```
 
 Di Mac:
@@ -95,52 +108,65 @@ tail -20 ~/Library/Logs/Jetlink/server.log
 
 Cara membaca:
 
-- `waiting for a jetlink gadget` di Mac artinya macOS sama sekali tidak melihat
-  comma; `could not open the gadget` artinya terlihat tapi gagal dibuka.
+- `waiting for a jetlink gadget` di Mac artinya macOS tidak melihat comma;
+  `could not open the gadget` artinya terlihat tapi gagal dibuka.
 - Owner log `releasing the gadget so the jetson can sleep` sementara Mac
-  menyala: state `sleep_after` salah lagi.
+  menyala: `sleep_after` di `/data/jetlink-server.json` salah.
 - `typec_cc_orientation` dan `pd_active` di tizi mengikuti jalur daya
   harness, bukan kabel Mac. Jangan dipakai untuk menilai kabel.
-- Mencabut ujung Mac: comma hanya mencatat `Type-C Source (default)`, disconnect
-  baru tercatat saat dicolok lagi. Tes 23 September: colok ulang di ujung Mac
-  berhasil 3 dari 3 walau UDC masih `configured`.
+- Mencabut ujung Mac: comma tidak melihat disconnect, UDC tetap `configured`.
+  Jetlink membaca turunnya iklan arus Type-C (3 A ke default) sebagai Mac
+  dicabut, jadi ikon hilang setelah sekitar 5 detik.
+- Baris owner log bertanggal `2026-07-28 22:05` adalah boot baru, sebelum jam
+  tersinkron. Beberapa berurutan dalam hitungan menit berarti comma reboot.
 
-Owner yang dihentikan manual (SIGINT) tidak dijalankan ulang oleh manager.
 Setelah update kode di comma, reboot saat offroad.
 
 ## Apa yang ada di mana
 
-- sunnypilot fork, branch `feature/chery-jetlink`: merge zoompilot `jetson-trt`
-  (jetlink sisi comma) ke branch Chery, plus commit `5ff003c23` yang mematikan
-  pool compile tinygrad (244 MB).
-- opendbc fork, branch `feature/chery-jetlink`: merge opendbc zoompilot, wajib
-  karena kode car dan selfdrived zoompilot mengimpornya saat boot.
-- jetlink fork, branch `stateful-models`: fix sesi hantu, model yang membawa
-  history sendiri (Cinque Terre V3), endpoint LFS huggingface dulu, plus
-  merge upstream `main` dengan Metal keep-alive. Keeper tinygrad dari branch
-  `keep-gpu-busy` sudah dibuang. Jetlink.app di Mac adalah build sendiri dari
-  `stateful-models` (`make -C macos app`). Cadangan: `/Applications/Jetlink-prev.app`
-  (resmi), `/Applications/Jetlink-keeper.app` (build dengan keeper tinygrad),
-  branch `backup/stateful-models-20260923` di fork.
-- Kalau `make -C macos app` masih membawa modul yang sudah dihapus: hapus
-  `build/` di root repo jetlink (sisa setuptools), lalu build ulang.
-- State owner jetlink di comma: `/data/jetlink-owner-state` (sebelumnya
-  `/dev/shm`, hilang tiap reboot).
-- Katalog model besar: chestnut v27, selector 19 dan 20 diterima
-  (`SUPPORTED_JSON_VERSIONS` di `sunnypilot/models/helpers.py`). Upstream masih
-  v25; saat merge `origin/master`, jaga URL v27 dan daftar versi ini.
+- sunnypilot fork, branch `chery-jetlink-v072`: merge zoompilot `jetson-trt`
+  (jetlink v0.7.2) ke branch Chery. Kode jetlink sisi comma sekarang di
+  submodule (`jetlink/openpilot`, `jetlink/comma`); fork hanya menyimpan
+  `openpilot/sunnypilot/jetlink_adapter`. Warp dibangun SConscript ke
+  `jetlink_adapter/models/`. Branch lama `feature/chery-jetlink` utuh untuk
+  rollback.
+- opendbc fork: tetap fork Chery (`a16e7d4`). opendbc zoompilot sejak merge
+  sebelumnya hanya berubah di Mazda.
+- jetlink fork, branch `hf-first`: v0.7.2 plus Hugging Face sebelum GitLab,
+  pool compile tinygrad dimatikan (244 MB), deteksi Mac dicabut lewat iklan
+  arus Type-C, hello server disimpan di `/data`, dan batas arus USB 500 mA.
+  Model stateful, Metal keep-alive, dan fix sesi hantu sudah ada di upstream.
+- Katalog model besar: chestnut v26 dari upstream (v25 plus Cinque Terre V3
+  di selector 19, terbaca juga oleh sunnylink). Patch selector 20 di
+  `models/helpers.py` masih ada tapi tidak dipakai. Setelah pindah dari v27,
+  pilih ulang Cinque Terre V3 sekali.
+- Mac: `/Applications/Jetlink.app` build `hf-first` (`make -C macos app`, versi
+  `0.7.2-4-g54fd5bf` saat dipasang). Cadangan: `Jetlink-stateful.app` (v0.3,
+  protocol lama, pasangan `feature/chery-jetlink`), `Jetlink-prev.app`,
+  `Jetlink-keeper.app`. Kalau build membawa sisa app lama: `make -C macos clean`.
 
-Update ke depan: merge `origin/master` sunnypilot seperti biasa; untuk jetlink,
-fetch `zoompilot/jetson-trt` dan merge, opendbc sama. Di comma updater mati
-(`DisableUpdates=1`), update manual dengan
-`git fetch --no-recurse-submodules origin feature/chery-jetlink && git reset --hard origin/feature/chery-jetlink`.
-Tanpa `--no-recurse-submodules` fetch gagal di submodule lama zoompilot.
+Update ke depan: jetlink, fetch `origin/main` zoompilot lalu rebase atau merge
+`hf-first`; sunnypilot, merge `zoompilot/jetson-trt` dan pin `jetlink_repo` ke
+`hf-first`. Protocol comma dan Mac harus sama: update keduanya bersamaan. Di
+comma updater mati (`DisableUpdates=1`), update manual:
+
+```bash
+cd /data/openpilot
+git fetch --no-recurse-submodules origin chery-jetlink-v072 && git merge --ff-only FETCH_HEAD
+git submodule update jetlink_repo
+sudo reboot
+```
+
+Rollback: `git checkout feature/chery-jetlink && git submodule update jetlink_repo`,
+reboot, dan di Mac buka `Jetlink-stateful.app`.
 
 ## Belum tervalidasi
 
-- Perjalanan panjang: panas kabin ke Mac, getaran ke konektor USB-C. Sempat
-  terlihat `send 13 sampai 19 ms` di beberapa frame saat mobil jalan.
-- Reboot UVLO belum direkam saat kejadian; hipotesis VBUS saat boot belum
-  dibuktikan, hanya dihindari.
-- Fix sesi hantu belum terpicu di kejadian nyata sejak dipasang.
-- Engage rutin: tunggu dua atau tiga perjalanan 20 sampai 30 menit bersih.
+- Tes jalan dengan v0.7.2: baru diuji dengan mobil diam, ignition on.
+- Lonjakan frame GPU 80 sampai 92 ms di Mac (sekali tiap beberapa menit, satu
+  memicu pelepasan). Dugaan: app lain di Mac. Belum dites dengan Mac sepi.
+- Kenapa 23 September VBUS 5.2 sampai 5.4 V dan tidak UVLO, sedangkan 30
+  September 4.6 V. Batas 500 mA membuatnya tidak penting lagi.
+- 40 detik pertama boot, sebelum owner memasang batas, comma masih bisa menarik
+  daya dari Mac. Aman di satu boot yang dites.
+- Memori comma 83% onroad, dekat batas alert 90% di drive panjang.
