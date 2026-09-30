@@ -64,7 +64,7 @@ Jetlink.app > Status: rate 20 per detik, frame sekitar 20 ms di GPU, slow 0.
 | v0.7.2 bench, CoreML GPU | 19.0 ms | 24.9 ms | 1/1201 |
 | v0.7.2 client Python ke server Swift, TCP lokal | 24.3 ms | 27.9 ms | 0/1190 |
 | v0.7.2 di mobil diam, Neural Engine, dengan comma | 24.8 ms | 25.8 ms | 3 menit bersih, lalu 14 slow dalam 5 menit |
-| v0.7.2 di mobil diam, CoreML GPU, dengan comma | ~20 ms | - | 3 slow dan 1 lepas dalam 7 menit |
+| v0.7.2 drive 30 Sep, CoreML GPU, dengan comma | ~20 ms | - | 3 slow dan 1 lepas dalam 10 menit, 5 menit terakhir bersih |
 
 Protocol v0.7 mengirim 393 KB per frame ke Mac dan menerima 8 KB. Lewat USB 2
 itu sekitar 10 ms per frame, lewat USB 3 1 sampai 2 ms.
@@ -162,7 +162,8 @@ reboot, dan di Mac buka `Jetlink-stateful.app`.
 
 ## Belum tervalidasi
 
-- Tes jalan dengan v0.7.2: baru diuji dengan mobil diam, ignition on.
+- Drive panjang dengan v0.7.2: baru satu drive sekitar 10 menit (30 Sep),
+  tanpa reboot, satu kali model besar dilepas.
 - Lonjakan frame GPU 80 sampai 92 ms di Mac (sekali tiap beberapa menit, satu
   memicu pelepasan). Dugaan: app lain di Mac. Belum dites dengan Mac sepi.
 - Kenapa 23 September VBUS 5.2 sampai 5.4 V dan tidak UVLO, sedangkan 30
