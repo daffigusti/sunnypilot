@@ -11,7 +11,7 @@ Tiga alat, dipakai sesuai kebutuhan:
 |---|---|
 | `tools/car_porting/steer_jiggle.py` | Angka jiggle, lag, dan tracking; video atau jendela live dengan tiga setir |
 | jotpluggler, layout `steer-jiggle` | Menelusuri sinyal mentah dengan timeline dan video |
-| op-replay-clipper `ui-alt` | Klip UI openpilot asli dengan panel telemetri, untuk dibagikan |
+| op-replay-clipper `ui-alt`, `driver-debug` | Klip UI openpilot asli dengan panel telemetri, dan klip driver monitoring, untuk dibagikan |
 
 Semua perintah dijalankan dari root repo, kecuali disebut lain.
 
@@ -122,7 +122,7 @@ scons -j$(sysctl -n hw.ncpu) openpilot/tools/jotpluggler/jotpluggler
 `--output x.png` butuh ImageMagick `convert`. Tanpa itu, file `.ppm` yang
 tertinggal bisa dibuka dengan Pillow.
 
-## Klip ui-alt (op-replay-clipper)
+## Klip ui-alt dan driver-debug (op-replay-clipper)
 
 Klip UI openpilot asli dengan panel TELEMETRY: TARGET, APPLIED, DELTA, ACTUAL,
 HANDS, gas/brake driver dan openpilot, serta aEgo/aTarget/cmd/out. Alatnya dari
@@ -138,44 +138,56 @@ cd op-replay-clipper
 git checkout 9070cd9                     # versi tempat patch dibuat
 git apply ../sunnypilot/tools/car_porting/op-replay-clipper-konik.patch
 uv sync
-
-# openpilot upstream dipin ke 19 Agustus 2026; master sudah terlalu jauh berubah
-git clone --filter=blob:none https://github.com/commaai/openpilot.git .cache/openpilot-local
-cd .cache/openpilot-local
-git checkout 555f48c
-git submodule update --init --recursive
-git lfs install --local && git lfs pull  # tanpa ini font masih pointer 131 byte
-cd ../..
 ```
 
-Bootstrap openpilot (`uv sync` plus scons) jalan otomatis di render pertama.
+Render pertama mengurus openpilot sendiri: clone upstream ke
+`.cache/openpilot-local`, pin ke `555f48c` (19 Agustus 2026, karena master sudah
+terlalu jauh berubah untuk renderer clipper), pull asset LFS, lalu bootstrap
+(`uv sync` plus scons). Butuh beberapa menit. Pin bisa diganti lewat
+`OPENPILOT_COMMIT=<sha>`; `OPENPILOT_COMMIT=""` mengikuti master (tidak
+disarankan).
 
 ### Render
 
 ```bash
 cd ~/Code/openpilot/op-replay-clipper
 TOKEN=$(python3 -c "import json;print(json.load(open('$HOME/.comma/auth.konik.json'))['access_token'])")
-env -u VIRTUAL_ENV SCALE=0.5 API_HOST=https://api.konik.ai uv run python clip.py ui-alt \
-  "391b5ce35cb77d89|000004df--29c0050d5a" -s 228 -l 15 \
-  --qcam --ui-alt-variant device --windowed --skip-openpilot-update \
-  -j "$TOKEN" -o ./shared/out.mp4
+R="391b5ce35cb77d89|000004dd--f4d940509f"
+
+# UI openpilot + panel telemetri
+env -u VIRTUAL_ENV API_HOST=https://api.konik.ai uv run python clip.py ui-alt "$R" \
+  -s 365 -l 15 -m 20 --ui-alt-variant device --windowed -j "$TOKEN" -o ~/Downloads/uialt.mp4
+
+# driver monitoring: kamera kabin + status DM, model, pose, riwayat awareness
+env -u VIRTUAL_ENV API_HOST=https://api.konik.ai uv run python clip.py driver-debug "$R" \
+  -s 365 -l 15 -m 20 --windowed -j "$TOKEN" -o ~/Downloads/driver-debug.mp4
 ```
 
 - `-s` dihitung dalam detik dari awal route (segment N mulai di 60 x N);
   `-l` maksimal 300.
-- `--skip-openpilot-update` wajib. Tanpa flag ini, clipper menarik master dan
-  pin 555f48c tertimpa.
-- `--qcam` wajib, karena Konik tidak punya fcamera. Karena itu variant
-  `stacked_*` yang butuh wide juga tidak bisa.
+- File yang dibutuhkan harus sudah di-upload ke Konik (minta di dashboard):
+  `ui-alt` butuh fcamera dan rlog; `driver-debug` butuh dcamera dan rlog.
+  Kalau route hanya punya qcamera, tambahkan `--qcam` ke `ui-alt`, tapi hasilnya
+  kabur (qcamera 526x330 di-upscale). Cek isi route:
+  `API_HOST=https://api.konik.ai .venv/bin/python -c "from openpilot.tools.lib.route import Route; print([(s.name.segment_num, bool(s.camera_path), bool(s.dcamera_path), bool(s.log_path)) for s in Route('<dongle>|<route>').segments])"`
+  (dari repo sunnypilot).
+- Variant `stacked_forward_over_wide`/`stacked_wide_over_forward` butuh
+  ecamera juga.
 - `--windowed` wajib di Mac, karena mode headless clipper hanya untuk Linux
   (Xorg). Jendela UI akan muncul selama render.
 - `SCALE` mengatur jendela sekaligus resolusi video: tanpa SCALE 2160x1080,
-  0.75 menjadi 1620x810, 0.5 menjadi 1080x540. qcamera sendiri 526x330, jadi
-  0.5 tidak kehilangan detail kamera.
-- `-m` target ukuran file dalam MB (default 9). Kecilkan untuk WhatsApp atau
-  Discord.
-- Untuk render ulang, tambahkan `--skip-openpilot-bootstrap --skip-download`.
+  0.75 menjadi 1620x810, 0.5 menjadi 1080x540. Dengan fcamera, jangan
+  dikecilkan kalau ingin tajam.
+- `-m` target ukuran file dalam MB (default 9). Naikkan (misal 20) untuk
+  fcamera supaya tidak pecah; kecilkan untuk WhatsApp atau Discord.
+- Untuk render ulang rentang yang sama, tambahkan
+  `--skip-openpilot-update --skip-openpilot-bootstrap --skip-download`.
   Render 15 detik makan sekitar 1 menit.
+- Header bisa menulis platform `mock` walau log mencatat `CHERY_OMODA_E5`.
+  Hanya label (clipper mengambilnya dari metadata route), isi klip tidak
+  terpengaruh.
+- Kotak wajah di `driver-debug` hanya perkiraan kasar dari clipper, bukan
+  output model.
 - Token Konik ada di `~/.comma/auth.konik.json`. Jangan tempel token ke log
   atau chat.
 
@@ -186,15 +198,20 @@ File `tools/car_porting/op-replay-clipper-konik.patch`, di atas clipper 9070cd9:
 | File | Perubahan | Kenapa |
 |---|---|---|
 | `core/route_downloader.py`, `core/route_inputs.py` | URL API membaca `API_HOST` | Aslinya di-hardcode ke api.commadotai.com |
+| `core/openpilot_config.py`, `core/openpilot_bootstrap.py` | Pin openpilot `555f48c`, `git lfs install --local` | Tanpa pin clipper ikut master yang sudah tidak cocok. Checkout yang di-pin dulu dianggap "drifted", dihapus, dan di-clone ulang dari master |
 | `core/openpilot_bootstrap.py` | Target scons untuk struktur `openpilot/` | Upstream #38219 (Juni) memindah semua ke `openpilot/`; #38411 (Juli) membuat params jadi ctypes `libparams_c` |
 | `renderers/ui_renderer.py` | Deteksi `openpilot/tools/clip/run.py`, lewati langkah `.fnt` | UI baru memuat `.ttf` langsung |
 | `renderers/big_ui_engine.py` | `VisionStreamType` dari `openpilot.cereal.visionipc`; ROAD menjadi NARROW_ROAD | API msgq pindah ke cereal |
-| `renderers/big_ui_engine.py` | `roadEncodeIdx` fallback ke `narrowRoadEncodeIdx` | Nama service kamera berubah di log baru |
+| `renderers/big_ui_engine.py` | `roadEncodeIdx` fallback ke `narrowRoadEncodeIdx`, `driverEncodeIdx` ke `cabinEncodeIdx` | Nama service kamera berubah di log baru |
+| `renderers/driver_debug_engine.py` | `cabinCameraState`, `VISION_STREAM_CABIN`, `cabin_camera_dialog.CabinCameraDialog` | Kamera driver berganti nama jadi cabin |
 
 Kalau clipper atau pin openpilot diperbarui dan ada yang patah, urutan
 kegagalan yang dulu ditemui: scons target, clip tool tidak ditemukan, font,
-headless Xorg, `VisionStreamType`, lalu `roadEncodeIdx`. Log tiap run ada di
-`shared/*.log`; cari `Traceback` paling dalam (dari `big_ui_engine.py`).
+headless Xorg, `VisionStreamType`, `roadEncodeIdx`, lalu untuk driver-debug
+nama cabin. `ZeroDivisionError` saat memuat ikon berarti asset masih pointer
+LFS (cek `ls -la .cache/openpilot-local/openpilot/selfdrive/assets/icons/chffr_wheel.png`,
+harus belasan KB, bukan 130 byte). Log tiap run ada di `shared/*.log`; cari
+`Traceback` paling dalam (dari `big_ui_engine.py` atau `driver_debug_engine.py`).
 
 ## Temuan route 000004df (28 September 2026)
 

@@ -1,8 +1,49 @@
 diff --git a/core/openpilot_bootstrap.py b/core/openpilot_bootstrap.py
-index 04eee76..580cf32 100644
+index 04eee76..524ec4d 100644
 --- a/core/openpilot_bootstrap.py
 +++ b/core/openpilot_bootstrap.py
-@@ -183,13 +183,23 @@ def bootstrap_openpilot(openpilot_dir: Path) -> None:
+@@ -7,7 +7,7 @@ import os
+ import sys
+ from pathlib import Path
+ 
+-from core.openpilot_config import DEFAULT_OPENPILOT_REPO_URL, default_local_openpilot_root
++from core.openpilot_config import DEFAULT_OPENPILOT_REPO_URL, default_local_openpilot_root, default_openpilot_commit
+ 
+ 
+ GIT_CLONE_FLAGS = [
+@@ -134,11 +134,31 @@ def _is_managed_local_checkout(openpilot_dir: Path) -> bool:
+     return openpilot_dir == managed_root.resolve()
+ 
+ 
++def _pin_checkout(openpilot_dir: Path, commit: str) -> None:
++    head = subprocess.run(["git", "rev-parse", "HEAD"], cwd=openpilot_dir, capture_output=True, text=True).stdout.strip()
++    if head != commit:
++        _run(["git", "fetch", "--depth", "1", "origin", commit], cwd=openpilot_dir)
++        # --force drops the runtime patches from the last render; they are re-applied before the next one
++        _run(["git", "checkout", "--force", commit], cwd=openpilot_dir)
++        _run(["git", "submodule", "update", "--init", "--recursive"], cwd=openpilot_dir)
++    # without a local install the smudge filter never runs and assets stay as LFS pointer files
++    _run(["git", "lfs", "install", "--local"], cwd=openpilot_dir)
++    _run(["git", "lfs", "pull"], cwd=openpilot_dir)
++
++
+ def ensure_openpilot_checkout(
+     openpilot_dir: Path,
+     branch: str = "master",
+     repo_url: str = DEFAULT_OPENPILOT_REPO_URL,
+ ) -> None:
++    commit = default_openpilot_commit()
++    if commit:
++        # a pinned checkout is a detached HEAD, which the branch-following path below would read as drift and reclone
++        if not openpilot_dir.exists():
++            _clone_checkout(openpilot_dir, branch, repo_url)
++        _pin_checkout(openpilot_dir, commit)
++        return
++
+     if not openpilot_dir.exists():
+         _clone_checkout(openpilot_dir, branch, repo_url)
+         return
+@@ -183,13 +203,23 @@ def bootstrap_openpilot(openpilot_dir: Path) -> None:
      _run(sync_cmd, cwd=openpilot_dir)
      ensure_macos_env_fix(openpilot_dir)
  
@@ -33,6 +74,28 @@ index 04eee76..580cf32 100644
      scons_cmd = [uv_bin, "run", "--no-sync"]
      if python_executable:
          scons_cmd.extend(["--python", python_executable])
+diff --git a/core/openpilot_config.py b/core/openpilot_config.py
+index 95c8dd0..e2cde50 100644
+--- a/core/openpilot_config.py
++++ b/core/openpilot_config.py
+@@ -5,6 +5,9 @@ import os
+ 
+ DEFAULT_OPENPILOT_REPO_URL = "https://github.com/commaai/openpilot.git"
+ DEFAULT_OPENPILOT_BRANCH = "master"
++# master moves faster than the renderers; this is the last commit they were brought up against.
++# OPENPILOT_COMMIT="" follows the branch head instead.
++DEFAULT_OPENPILOT_COMMIT = "555f48c5d28709f039b79f3f6105e51305edd4b5"
+ DEFAULT_IMAGE_OPENPILOT_ROOT = "/home/batman/openpilot"
+ DEFAULT_LOCAL_OPENPILOT_ROOT = "./.cache/openpilot-local"
+ 
+@@ -23,3 +26,7 @@ def default_image_openpilot_root() -> str:
+ 
+ def default_local_openpilot_root() -> str:
+     return os.environ.get("OPENPILOT_LOCAL_ROOT", DEFAULT_LOCAL_OPENPILOT_ROOT)
++
++
++def default_openpilot_commit() -> str:
++    return os.environ.get("OPENPILOT_COMMIT", DEFAULT_OPENPILOT_COMMIT)
 diff --git a/core/route_downloader.py b/core/route_downloader.py
 index c221a0d..8fc12fb 100644
 --- a/core/route_downloader.py
@@ -66,15 +129,15 @@ index 507326a..7b12cc2 100644
  
      if jwt_token:
 diff --git a/renderers/big_ui_engine.py b/renderers/big_ui_engine.py
-index 958aae6..e2cdda3 100644
+index 958aae6..48de42d 100644
 --- a/renderers/big_ui_engine.py
 +++ b/renderers/big_ui_engine.py
 @@ -1439,6 +1439,11 @@ def build_camera_frame_refs(
      refs_by_frame_id: dict[int, CameraFrameRef] = {}
      refs_by_timestamp: dict[int, CameraFrameRef] = {}
  
-+    # newer logs name the road camera "narrowRoad"; qcamera shares its frame ids
-+    renamed = {"roadEncodeIdx": "narrowRoadEncodeIdx"}.get(encode_service)
++    # newer logs name the road camera "narrowRoad" and the driver camera "cabin"; qcamera shares road frame ids
++    renamed = {"roadEncodeIdx": "narrowRoadEncodeIdx", "driverEncodeIdx": "cabinEncodeIdx"}.get(encode_service)
 +    if renamed and not any(msg.which() == encode_service for messages in messages_by_segment for msg in messages):
 +        encode_service = renamed
 +
@@ -123,6 +186,83 @@ index 958aae6..e2cdda3 100644
                          frame_bytes,
                          camera_ref.route_frame_id,
                          camera_ref.timestamp_sof,
+diff --git a/renderers/driver_debug_engine.py b/renderers/driver_debug_engine.py
+index 08f6ced..b265d56 100644
+--- a/renderers/driver_debug_engine.py
++++ b/renderers/driver_debug_engine.py
+@@ -251,6 +251,10 @@ def build_driver_render_steps(messages_by_segment: list[list], *, start: int, en
+         encode_service=DRIVER_CAMERA_SERVICE,
+     )
+     ordered_messages = [msg for segment in messages_by_segment for msg in segment]
++    # newer logs call the driver camera "cabin"
++    state_service = DRIVER_CAMERA_STATE_SERVICE
++    if not any(msg.which() == state_service for msg in ordered_messages):
++        state_service = "cabinCameraState"
+ 
+     current_state: dict = {}
+     render_steps: list[RenderStep] = []
+@@ -258,10 +262,10 @@ def build_driver_render_steps(messages_by_segment: list[list], *, start: int, en
+         which = msg.which()
+         current_state[which] = msg
+ 
+-        if which != DRIVER_CAMERA_STATE_SERVICE:
++        if which != state_service:
+             continue
+ 
+-        camera_state = msg.driverCameraState
++        camera_state = getattr(msg, state_service)
+         camera_ref = _match_driver_camera_ref(camera_state, refs_by_frame_id, refs_by_timestamp)
+         if camera_ref is None:
+             logger.warning("Skipping driver frame because no matching driver encode frame was found")
+@@ -1308,8 +1312,13 @@ def _driver_camera_dialog_module(*, device_type: str) -> str:
+ 
+ def _select_driver_camera_dialog(*, device_type: str):
+     module_name = _driver_camera_dialog_module(device_type=device_type)
+-    module = __import__(module_name, fromlist=["DriverCameraDialog"])
+-    return module.DriverCameraDialog
++    try:
++        module = __import__(module_name, fromlist=["DriverCameraDialog"])
++        return module.DriverCameraDialog
++    except ModuleNotFoundError:
++        # newer openpilot renamed the driver camera to "cabin"
++        module = __import__(module_name.replace("driver_camera_dialog", "cabin_camera_dialog"), fromlist=["CabinCameraDialog"])
++        return module.CabinCameraDialog
+ 
+ 
+ def _driver_camera_view_base_class(*, device_type: str):
+@@ -1486,7 +1495,13 @@ def clip(
+ ) -> None:
+     import pyray as rl
+     import tqdm
+-    from msgq.visionipc import VisionIpcServer, VisionStreamType
++    from msgq.visionipc import VisionIpcServer
++    try:
++        from msgq.visionipc import VisionStreamType
++    except ImportError:
++        # newer openpilot moved the stream enum into cereal and renamed DRIVER to CABIN
++        from openpilot.cereal.visionipc import VisionStreamType
++    driver_stream = getattr(VisionStreamType, "VISION_STREAM_DRIVER", None) or VisionStreamType.VISION_STREAM_CABIN
+     from openpilot.common.prefix import OpenpilotPrefix
+     from openpilot.common.utils import Timer
+     from openpilot.selfdrive.ui.ui_state import ui_state
+@@ -1524,7 +1539,7 @@ def clip(
+ 
+         vipc = VisionIpcServer("camerad")
+         vipc.create_buffers(
+-            VisionStreamType.VISION_STREAM_DRIVER,
++            driver_stream,
+             4,
+             driver_frame_queue.frame_w,
+             driver_frame_queue.frame_h,
+@@ -1568,7 +1583,7 @@ def clip(
+                             f"Driver camera frame order mismatch: expected {step.camera_ref}, got {camera_ref}"
+                         )
+                 vipc.send(
+-                    VisionStreamType.VISION_STREAM_DRIVER,
++                    driver_stream,
+                     frame_bytes,
+                     camera_ref.route_frame_id,
+                     camera_ref.timestamp_sof,
 diff --git a/renderers/ui_renderer.py b/renderers/ui_renderer.py
 index c789bf7..9befdba 100644
 --- a/renderers/ui_renderer.py
