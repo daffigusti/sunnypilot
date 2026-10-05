@@ -8,8 +8,9 @@ import openpilot.cereal.messaging as messaging
 from openpilot.cereal import log, custom
 from opendbc.car.structs import car
 from openpilot.common.constants import CV
+from openpilot.selfdrive.selfdrived.events import get_display_speed
 from openpilot.sunnypilot.selfdrive.selfdrived.events_base import EventsBase, Priority, ET, Alert, \
-  NoEntryAlert, ImmediateDisableAlert, EngagementAlert, NormalPermanentAlert, AlertCallbackType, EmptyAlert, \
+  NoEntryAlert, ImmediateDisableAlert, EngagementAlert, NormalPermanentAlert, AlertCallbackType, \
   wrong_car_mode_alert
 from openpilot.sunnypilot.selfdrive.controls.lib.speed_limit import PCM_LONG_REQUIRED_MAX_SET_SPEED, CONFIRM_SPEED_THRESHOLD
 from openpilot.common.hardware import HARDWARE
@@ -59,23 +60,31 @@ def stock_ecu_not_ready_alert(CP: car.CarParams, CS: car.CarState, sm: messaging
   return NoEntryAlert(line, alert_text_1=title)
 
 
+def _set_speed_ms(CS: car.CarState, sm: messaging.SubMaster) -> float:
+  v_cruise_cluster = CS.vCruiseCluster
+  set_speed = sm['controlsState'].deprecated.vCruise if v_cruise_cluster == 0.0 else v_cruise_cluster
+  # vCruise/vCruiseCluster are kph; the resolver speeds are m/s
+  return set_speed * CV.KPH_TO_MS
+
+
 def speed_limit_adjust_alert(CP: car.CarParams, CS: car.CarState, sm: messaging.SubMaster, metric: bool, soft_disable_time: int, personality) -> Alert:
-  speedLimit = sm['longitudinalPlanSP'].speedLimit.resolver.speedLimit
-  speed = round(speedLimit * (CV.MS_TO_KPH if metric else CV.MS_TO_MPH))
-  message = f'Adjusting to {speed} {"km/h" if metric else "mph"} speed limit'
+  speed = sm['longitudinalPlanSP'].speedLimit.assist.vTarget  # the cap that moved, in this event's message
+  # the plan never runs above the set speed, so a limit over it settles there
+  set_speed = _set_speed_ms(CS, sm)
+  if set_speed > 0:
+    speed = min(speed, set_speed)
+  # mici wraps the unit off its number; break before the speed instead
+  sep = "\n" if IS_MICI else " "
   return Alert(
-    message,
+    f'Adjusting to{sep}{get_display_speed(speed, metric)}',
     "",
     AlertStatus.normal, AlertSize.small,
-    Priority.LOW, VisualAlert.none, AudibleAlert.none, 4.)
+    Priority.LOW, VisualAlert.none, AudibleAlertSP.promptSingleHigh, 5.)
 
 
 def speed_limit_pre_active_alert(CP: car.CarParams, CS: car.CarState, sm: messaging.SubMaster, metric: bool, soft_disable_time: int, personality) -> Alert:
   speed_conv = CV.MS_TO_KPH if metric else CV.MS_TO_MPH
-  v_cruise_cluster = CS.vCruiseCluster
-  set_speed = sm['controlsState'].deprecated.vCruise if v_cruise_cluster == 0.0 else v_cruise_cluster
-  # vCruise/vCruiseCluster are kph; the resolver speeds below are m/s
-  set_speed_conv = round(set_speed * CV.KPH_TO_MS * speed_conv)
+  set_speed_conv = round(_set_speed_ms(CS, sm) * speed_conv)
 
   speed_limit_final_last = sm['longitudinalPlanSP'].speedLimit.resolver.speedLimitFinalLast
   speed_limit_final_last_conv = round(speed_limit_final_last * speed_conv)
@@ -96,10 +105,11 @@ def speed_limit_pre_active_alert(CP: car.CarParams, CS: car.CarState, sm: messag
     alert_1_str = f"Speed Limit Assist: set to {pcm_long_required_max_set_speed_conv} {speed_unit} to engage"
   else:
     if IS_MICI:
+      # the target is the limit plus any offset; the break keeps the unit with its number
       if set_speed_conv < speed_limit_final_last_conv:
-        alert_1_str = "Press + to confirm speed limit"
+        alert_1_str = f"Press + for\n{get_display_speed(speed_limit_final_last, metric)}"
       elif set_speed_conv > speed_limit_final_last_conv:
-        alert_1_str = "Press - to confirm speed limit"
+        alert_1_str = f"Press - for\n{get_display_speed(speed_limit_final_last, metric)}"
     else:
       alert_size = AlertSize.none
 
@@ -144,16 +154,20 @@ EVENTS_SP: dict[int, dict[str, Alert | AlertCallbackType]] = {
   },
 
   EventNameSP.stockLkasOff: {
-    # Mazda: invalidLkasSetting is swapped for this when MADS is on (CarSpecificEventsSP).
-    # No alert of its own: the button press on the same frame already speaks; the no-entry
-    # is for later enable attempts with LKA still off.
-    ET.USER_DISABLE: EmptyAlert,
+    # Mazda: invalidLkasSetting is swapped for this when MADS is on (CarSpecificEventsSP); MADS
+    # holds lateral paused on it (mads.py). mici gets a standing alert, tizi only its border.
     ET.NO_ENTRY: Alert(
       "Lateral Disabled",
       "LKAS is off",
       AlertStatus.normal, AlertSize.mid,
       Priority.LOW, VisualAlert.none, AudibleAlert.refuse, 3.),
+    **({ET.PERMANENT: NormalPermanentAlert("Lateral Disabled", "LKAS is off", priority=Priority.LOW)} if IS_MICI else {}),
   },
+
+  # LKA back on with lateral resuming, the EPS not delivering yet: still disabled to the driver.
+  EventNameSP.stockLkasArming: {
+    ET.PERMANENT: NormalPermanentAlert("Lateral Disabled", "Waiting for steering", priority=Priority.LOW),
+  } if IS_MICI else {},
 
   EventNameSP.manualLongitudinalRequired: {
     ET.WARNING: Alert(
@@ -309,19 +323,11 @@ EVENTS_SP: dict[int, dict[str, Alert | AlertCallbackType]] = {
   },
 
   EventNameSP.speedLimitActive: {
-    ET.WARNING: Alert(
-      "Auto adjusting to speed limit",
-      "",
-      AlertStatus.normal, AlertSize.small,
-      Priority.LOW, VisualAlert.none, AudibleAlertSP.promptSingleHigh, 5.),
+    ET.WARNING: speed_limit_adjust_alert,
   },
 
   EventNameSP.speedLimitChanged: {
-    ET.WARNING: Alert(
-      "Set speed changed",
-      "",
-      AlertStatus.normal, AlertSize.small,
-      Priority.LOW, VisualAlert.none, AudibleAlertSP.promptSingleHigh, 5.),
+    ET.WARNING: speed_limit_adjust_alert,
   },
 
   EventNameSP.speedLimitPreActive: {
@@ -361,12 +367,14 @@ EVENTS_SP: dict[int, dict[str, Alert | AlertCallbackType]] = {
   },
 
   # an accelerator lost or too slow while engaged: the small model drives on
-  # from a reset history and nothing disengages, so the warning is as loud as a
-  # soft disable. Raised for 5 s (accelerator_events); a disengage ends it
+  # from a reset history and nothing disengages. As loud as a soft disable for
+  # 5 s (accelerator_events), but it says what happened, not TAKE CONTROL:
+  # nothing has let go, and a driver told to take control on every drop read
+  # it as a disengage (2026-10-04). A disengage ends it
   EventNameSP.bigModelLinkLost: {
     ET.WARNING: Alert(
-      "TAKE CONTROL",
-      "Big model lost, small model driving",
+      "Big Model Lost",
+      "Using small model",
       AlertStatus.userPrompt, AlertSize.mid,
       Priority.MID, VisualAlert.steerRequired, AudibleAlert.warningSoft, .2),
   },

@@ -6,8 +6,11 @@ See the LICENSE.md file in the root directory for more details.
 """
 from enum import Enum
 
+import numpy as np
+
 from openpilot.cereal import messaging, log, custom
 from opendbc.car.structs import car
+from opendbc.sunnypilot.car.interfaces import get_steer_rail_schedule
 from openpilot.common.params import Params
 from openpilot.sunnypilot import jetlink_adapter
 from openpilot.selfdrive.ui.sunnypilot.layouts.settings.display import OnroadBrightness
@@ -51,6 +54,8 @@ class UIStateSP:
     # jetlink's snapshot (jetlink.openpilot.Status) from the params pass; None
     # with a chestnut fitted or no jetlink on this device
     self.jetlink = None
+    # Jetlink holds the USB port, so ADB is off and its toggle greyed out
+    self.adb_blocked: bool = False
     self._accelerator_state_name: str = 'none'
     self.blindspot: bool = False
     self.chevron_metrics = None
@@ -70,6 +75,10 @@ class UIStateSP:
     self.enforce_torque_control: bool = False
     self.custom_torque_params: bool = False
     self.torque_override_enabled: bool = False
+    # carOutput's applied torque on a scale where the EPS rail is +-1, for the torque bar and
+    # lane lines: a torque tune saturates at the rail, below the carcontroller's full scale
+    self.torque_utilization: float = 0.0
+    self._steer_rail_schedule = None
     self._sp_initialized: bool = False
 
   def update(self) -> None:
@@ -79,6 +88,14 @@ class UIStateSP:
       self.sunnylink_state.stop()
     # read where sm is updated, so the params thread never touches a message
     self._accelerator_state_name = str(self.sm['modelDataV2SP'].acceleratorState)
+    self._update_torque_utilization()
+
+  def _update_torque_utilization(self) -> None:
+    torque = self.sm['carOutput'].actuatorsOutput.torque
+    if self._steer_rail_schedule is not None:
+      rail = float(np.interp(self.sm['carState'].vEgo, self._steer_rail_schedule[0], self._steer_rail_schedule[1]))
+      torque = min(1.0, max(-1.0, torque / rail))
+    self.torque_utilization = torque
 
   @property
   def jetlink_view(self):
@@ -137,6 +154,8 @@ class UIStateSP:
     state = ss.state
     mads = ss_sp.mads
     mads_state = mads.state
+    # held by the car's own lane keep (mads.py update_stock_lkas): reads as lateral off
+    mads_enabled = mads.enabled and not mads.lateralHeld
 
     if state == OpenpilotState.preEnabled:
       return "override"
@@ -148,20 +167,20 @@ class UIStateSP:
       if any(e.overrideLongitudinal for e in onroad_evt):
         return "override"
 
-    if mads_state in (MADSState.paused, MADSState.overriding):
+    if mads_state in (MADSState.paused, MADSState.overriding) and not mads.lateralHeld:
       return "override"
 
     # MADS specific statuses
     if not mads.available:
       return "engaged" if ss.enabled else "disengaged"
 
-    if not mads.enabled and not ss.enabled:
+    if not mads_enabled and not ss.enabled:
       return "disengaged"
 
-    if mads.enabled and ss.enabled:
+    if mads_enabled and ss.enabled:
       return "engaged"
 
-    if mads.enabled:
+    if mads_enabled:
       return "lat_only"
 
     if ss.enabled:
@@ -174,6 +193,7 @@ class UIStateSP:
     if CP_SP_bytes is not None:
       self.CP_SP = messaging.log_from_bytes(CP_SP_bytes, custom.CarParamsSP)
       self.has_icbm = self.CP_SP.intelligentCruiseButtonManagementAvailable and self.params.get_bool("IntelligentCruiseButtonManagement")
+    self._steer_rail_schedule = get_steer_rail_schedule(self.CP) if self.CP is not None else None
 
     self._enforce_constraints()
     source = get_active_source(chestnut=self.chestnut_present, chestnut_active=self.chestnut_active,
@@ -183,6 +203,7 @@ class UIStateSP:
     self.chestnut_compiled = self.chestnut_compiled or self.model_runner_tinygrad
     # on the 5 Hz params pass, not per frame in a layout; a fitted chestnut owns chestnut_state
     self.jetlink = None if self.sm['deviceState'].chestnutPresent else jetlink_adapter.status()
+    self._enforce_usb_port()
     # the Jetson configures the gadget ~25 s after a cold boot, after the one-shot
     # usb_unknown decision; recognising it late still clears "unknown"
     if (view := self.jetlink_view) is not None and view.present and self.usb_unknown:
@@ -251,10 +272,10 @@ class UIStateSP:
         self.params.remove("LateralJerkTorqueController")
         self.params.remove("AlphaLongitudinalEnabled")
 
-    # No longitudinal control: no experimental mode or DEC
+    # No longitudinal control: no experimental mode. DEC, speed assist, custom ACC and
+    # SCC keep their values; card and the planner leave them idle until long or ICBM returns.
     if not has_long:
       self.params.remove("ExperimentalMode")
-      self.params.remove("DynamicExperimentalControl")
 
     # ICBM: clear where the buttons have no set speed to move (icbm_applicable)
     if self.CP_SP is not None:
@@ -265,12 +286,14 @@ class UIStateSP:
       self.params.remove("IntelligentCruiseButtonManagement")
       self.has_icbm = False
 
-    # Cruise features requiring longitudinal or ICBM
-    if not (has_long or self.has_icbm):
-      self.params.remove("CustomAccIncrementsEnabled")
-      self.params.remove("SmartCruiseControlVision")
-      self.params.remove("SmartCruiseControlMap")
-      self.params.remove("SmartCruiseDecelOvershoot")
+  def _enforce_usb_port(self) -> None:
+    """ADB and Jetlink both need the comma's USB port: the link
+    on turns ADB off, and the developer panels grey its toggle out. Here, not
+    in the panels, so a link set from sunnylink counts too. jetlink's owner
+    retries the port in seconds while ADB's gadget still holds it."""
+    self.adb_blocked = self.jetlink is not None and self.jetlink.enabled
+    if self.adb_blocked and self.params.get_bool("AdbEnabled"):
+      self.params.put_bool("AdbEnabled", False, block=True)
 
 
 def set_always_offroad(params: Params, enable: bool) -> None:
